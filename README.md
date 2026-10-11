@@ -12,6 +12,10 @@ A modern audio editor in the spirit of Audacity, with a cleaner, faster workflow
 
 ## Getting started
 
+**Windows:** download `TuffAudio.exe` and double-click it. There's nothing to install. Windows may show a "Windows protected your PC" warning because the app isn't code-signed. Click **More info → Run anyway**.
+
+**From source:**
+
 ```bash
 npm install
 npm start          # launches the desktop app (Electron)
@@ -22,7 +26,8 @@ Other scripts:
 ```bash
 npm test           # DSP / file-format unit tests (Node's built-in test runner)
 npm run web        # runs the same UI in a browser at http://localhost:5173
-npm run dist       # builds installers with electron-builder
+npm run dist:win   # builds dist/TuffAudio.exe (portable, no install needed)
+npm run dist       # builds for the current platform with electron-builder
 ```
 
 ## Recording desktop audio

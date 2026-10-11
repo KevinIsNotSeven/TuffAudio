@@ -10,7 +10,8 @@
     "start": "electron .",
     "web": "node scripts/serve.mjs",
     "test": "node --test test/*.test.js",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win portable --x64"
   },
   "devDependencies": {
     "electron": "^44.0.0",
@@ -31,11 +32,14 @@
       }
     },
     "win": {
-      "target": "nsis"
+      "target": "portable"
     },
     "linux": {
       "target": "AppImage",
       "category": "Audio"
+    },
+    "portable": {
+      "artifactName": "TuffAudio.exe"
     }
   }
 }
