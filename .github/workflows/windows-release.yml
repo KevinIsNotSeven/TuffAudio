@@ -1,0 +1,35 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, master, claude/bold-goldberg-o2wza6]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build portable TuffAudio.exe
+        run: npx electron-builder --win portable --x64 --publish never
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0
+          name: TuffAudio 0.1.0 for Windows
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: dist/TuffAudio.exe
+          body: |
+            **Download `TuffAudio.exe` below and double-click it.** There's nothing to install.
+
+            Windows may say "Windows protected your PC" because the app isn't code-signed yet. Click **More info → Run anyway**.
