@@ -1,0 +1,82 @@
+# TuffAudio
+
+A modern audio editor in the spirit of Audacity, with a cleaner, faster workflow:
+
+- **Quick trimming.** Drag across a waveform, then **Trim** (keep it), **Delete**, **Silence**, **Fade in/out**, or **Auto-trim** silence from both ends in one click. Drag the edges of a selection to fine-tune it. Undo/redo covers everything.
+- **Recording from anywhere.** Record a microphone, a line input, **desktop/system audio**, or **desktop + mic together**. You can record in mono or stereo. Existing tracks play while you record, so you can overdub.
+- **One-click mono ⇄ stereo.** Mix to mono (or keep only left or right), copy mono to both sides, swap L/R, split a stereo track into two mono tracks, or join two mono tracks into stereo. Export to mono or stereo.
+- **Non-destructive effects, like Blender's modifiers.** Each track has an effect stack. You can reorder it by dragging, toggle effects on and off, collapse them, duplicate them and reset them. Nothing touches your audio until you press **Apply** on one effect, on all of them, or on just the selection. The waveform shows the processed result live (press `V` to switch views).
+- **18 built-in effects:** Gain, Fade In, Fade Out, Normalize, Compressor, Limiter, Noise Gate, Equalizer, Filter, Reverb, Echo/Delay, Chorus, Distortion, Lo-Fi, Tremolo, Pan, Stereo Width and Reverse. There are also one-click presets: Voice Clean-up, Podcast Polish, Telephone, Lo-fi Tape and Big Hall.
+- **Modern UI.** Dark glass theme, animated transport, GPU-friendly canvas waveforms that zoom down to individual samples, a command palette (`Ctrl/⌘+K`), drag-and-drop import, toasts and a live output meter.
+- **Projects.** Save and reopen `.tuff` projects. Effect stacks stay editable after a save. Export to WAV as 16-bit, 24-bit or 32-bit float, for the whole project or just the selection.
+
+## Getting started
+
+```bash
+npm install
+npm start          # launches the desktop app (Electron)
+```
+
+Other scripts:
+
+```bash
+npm test           # DSP / file-format unit tests (Node's built-in test runner)
+npm run web        # runs the same UI in a browser at http://localhost:5173
+npm run dist       # builds installers with electron-builder
+```
+
+## Recording desktop audio
+
+| Platform | How it works |
+| --- | --- |
+| **Windows** | Pick **System audio** in the *Record from* menu. TuffAudio uses WASAPI loopback, so no extra setup is needed. |
+| **macOS** | Pick **System audio**. This needs a recent macOS, and you must allow Screen & System Audio Recording in System Settings the first time. A virtual loopback device such as BlackHole also works. It shows up under *Desktop audio* automatically. |
+| **Linux** | Pick a **"Monitor of …"** input. PulseAudio and PipeWire expose your speakers as a monitor source, and TuffAudio lists these under *Desktop audio*. |
+
+Microphones and line inputs are recorded raw, with echo cancellation, noise suppression and auto-gain turned off. That keeps instruments and line-level sources clean.
+
+## Keyboard shortcuts
+
+| Action | Keys |
+| --- | --- |
+| Play / pause | `Space` |
+| Record | `R` |
+| Loop | `L` |
+| Trim to selection | `Ctrl/⌘+T` |
+| Delete selection | `Delete` / `Backspace` |
+| Cut / copy / paste | `Ctrl/⌘+X / C / V` |
+| Silence selection | `Ctrl/⌘+L` |
+| Selection → new track | `Ctrl/⌘+D` |
+| Auto-trim silence | `Ctrl/⌘+Shift+T` |
+| Undo / redo | `Ctrl/⌘+Z` / `Ctrl/⌘+Shift+Z` |
+| Zoom in / out / fit | `=` / `-` / `Ctrl/⌘+0` |
+| Command palette | `Ctrl/⌘+K` |
+| All shortcuts | `?` |
+
+On the mouse: drag to select, double-click to select a whole track, `Shift`+click to extend the selection, `Ctrl/⌘`+scroll to zoom, `Shift`+scroll to pan. Double-click any slider to reset it.
+
+## How it's built
+
+Electron plus the Web Audio API, written as plain ES modules with no bundler or framework.
+
+```
+src/main/            Electron main process (app:// protocol, loopback capture, save dialogs)
+src/renderer/
+  index.html, styles.css
+  js/main.js         UI bootstrap: toolbar, shortcuts, record-source picker, palette
+  js/actions.js      Every command (toolbar, menus, shortcuts and palette all share these)
+  js/state.js        Project state, event bus, snapshot-based undo
+  js/audio/
+    effects.js       Effect definitions: realtime Web Audio graphs or sample processors
+    engine.js        Playback, live effect updates, offline rendering, export mixdown
+    recorder.js      Mic / line / desktop / mixed capture through an AudioWorklet
+  js/dsp/            Pure functions: editing, analysis, WAV encoder, .tuff format
+  js/ui/             Timeline (canvas waveforms), inspector (effect stack), widgets
+test/                Unit tests for the DSP and file formats
+```
+
+Design notes:
+
+- Audio is stored as immutable `Float32Array` channels. Every edit creates new arrays, so an undo snapshot only holds references and costs almost nothing.
+- Effects come in two kinds. **Live** effects are Web Audio node graphs, so slider moves are heard instantly during playback. **Render** effects are sample-domain processors (Normalize, Noise Gate, Lo-Fi, Reverse). TuffAudio pre-renders everything up to the last render effect and runs the rest live.
+- Playback, the waveform preview, **Apply** and **Export** all go through the same effect definitions, so what you hear is exactly what gets baked.

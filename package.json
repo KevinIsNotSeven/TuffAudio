@@ -1,0 +1,41 @@
+{
+  "name": "tuffaudio",
+  "productName": "TuffAudio",
+  "version": "0.1.0",
+  "description": "A modern, fast audio editor: quick trimming, desktop/mic/line recording, one-click mono/stereo, and a non-destructive effect stack.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/main/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "web": "node scripts/serve.mjs",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "app.tuffaudio",
+    "productName": "TuffAudio",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "TuffAudio records audio from your microphone and line inputs.",
+        "NSAudioCaptureUsageDescription": "TuffAudio records your computer's audio output."
+      }
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Audio"
+    }
+  }
+}
