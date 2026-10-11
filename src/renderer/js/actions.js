@@ -4,6 +4,7 @@
 import {
   state, emit, checkpoint, undo as undoState, redo as undoRedo, createTrack, addTrack, setSelection, setActive,
   targetTracks, hasRange, projectDuration, activeTrack, getTrack, effectsChanged, clearHistory, canUndo, canRedo, undoLabel, redoLabel,
+  prefs, setPref,
 } from './state.js';
 import * as E from './dsp/edit.js';
 import { detectSilenceBounds } from './dsp/analysis.js';
@@ -399,16 +400,21 @@ def('toggleProcessed', {
 for (const [type, def_] of Object.entries(EFFECTS)) {
   def(`fx:${type}`, { label: `Add effect: ${def_.name}`, icon: def_.icon, group: 'Effects', enabled: () => !!activeTrack(), run: () => addEffect(type) });
 }
-for (const p of PRESETS) def(`preset:${p.name}`, { label: `Add preset: ${p.name}`, icon: 'sparkles', group: 'Effects', enabled: () => !!activeTrack(), run: () => addPreset(p) });
+for (const p of PRESETS) def(`preset:${p.name}`, { label: `Add preset: ${p.name}`, icon: 'sparkles', group: 'Effects', hidden: () => !prefs.showPresets, enabled: () => !!activeTrack(), run: () => addPreset(p) });
+def('togglePresets', {
+  label: 'Show quick presets', icon: 'sparkles', group: 'View',
+  dynamicLabel: () => (prefs.showPresets ? 'Hide quick presets' : 'Show quick presets'),
+  run() { setPref('showPresets', !prefs.showPresets); toast(prefs.showPresets ? 'Quick presets shown' : 'Quick presets hidden'); },
+});
 
 // ---- View ---------------------------------------------------------------------------------
 
 export function zoomAround(factor, time = null) {
   const v = state.view;
   const t = time ?? (state.playing ? state.playhead : (sel().start + sel().end) / 2);
-  const px = (t - v.scrollX) * v.pps;
+  const px = (t - v.scroll) * v.pps;
   v.pps = Math.max(2, Math.min(sr() * 2, v.pps * factor));
-  v.scrollX = Math.max(0, t - px / v.pps);
+  v.scroll = Math.max(0, t - px / v.pps);
   emit('view');
 }
 def('zoomIn', { label: 'Zoom in', icon: 'zoomIn', keys: '=', group: 'View', run: () => zoomAround(1.5) });
@@ -417,8 +423,8 @@ def('zoomFit', {
   label: 'Zoom to fit', icon: 'fit', keys: 'Mod+0', group: 'View',
   run() {
     const d = projectDuration() || 10;
-    state.view.pps = Math.max(2, (state.view.width - 24) / d);
-    state.view.scrollX = 0;
+    state.view.pps = Math.max(2, (state.view.span - 24) / d);
+    state.view.scroll = 0;
     emit('view');
   },
 });
@@ -426,8 +432,8 @@ def('zoomSel', {
   label: 'Zoom to selection', icon: 'zoomIn', keys: 'Mod+E', group: 'View', enabled: hasRange,
   run() {
     const { start, end } = sel();
-    state.view.pps = Math.min(sr() * 2, (state.view.width - 24) / (end - start));
-    state.view.scrollX = start;
+    state.view.pps = Math.min(sr() * 2, (state.view.span - 24) / (end - start));
+    state.view.scroll = start;
     emit('view');
   },
 });

@@ -287,6 +287,38 @@ export function updateTrackMix() {
   });
 }
 
+// While looping, moving or resizing the selection retargets the loop right away.
+// If the playhead is still inside the new loop we just move the loop points
+// (gapless); otherwise playback jumps to the start of the new loop.
+let loopTimer = null;
+function currentLoopTarget() {
+  const total = projectDuration();
+  return hasRange() ? { start: state.selection.start, end: state.selection.end } : { start: 0, end: total };
+}
+function updateLoop() {
+  if (!state.playing || !state.loop || !loopRange) return;
+  const next = currentLoopTarget();
+  if (next.end - next.start < 0.01) return;
+  if (Math.abs(next.start - loopRange.start) < 1e-6 && Math.abs(next.end - loopRange.end) < 1e-6) return;
+  const pos = position();
+  const inside = pos >= next.start && pos < next.end;
+  const fits = [...voices.values()].every((v) => v.source.buffer.duration >= next.end - 1e-6);
+  if (inside && fits) {
+    startOffset = pos;
+    startCtxTime = ctx.currentTime;
+    loopRange = next;
+    voices.forEach((v) => { v.source.loopStart = next.start; v.source.loopEnd = next.end; });
+    emit('transport');
+  } else {
+    play(inside ? pos : next.start);
+  }
+}
+on('selection', () => {
+  if (!state.playing || !state.loop) return;
+  clearTimeout(loopTimer);
+  loopTimer = setTimeout(updateLoop, 40);
+});
+
 on('trackprops', updateTrackMix);
 on('tracks', () => { if (state.playing) play(position()); });
 on('audio', (id) => { if (state.playing) rebuildVoice(id); });

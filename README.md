@@ -2,17 +2,18 @@
 
 A modern audio editor in the spirit of Audacity, with a cleaner, faster workflow:
 
-- **Quick trimming.** Drag across a waveform, then **Trim** (keep it), **Delete**, **Silence**, **Fade in/out**, or **Auto-trim** silence from both ends in one click. Drag the edges of a selection to fine-tune it. Undo/redo covers everything.
+- **Top-to-bottom timeline.** Time runs down the screen, and each track is a column. The scroll wheel moves through time, `Shift`+scroll moves across tracks, and `Ctrl/⌘`+scroll zooms. Drag a column's right edge to resize it, or drag the divider next to the side panel to resize the panel. TuffAudio remembers these sizes and the window size.
+- **Quick trimming.** Drag down a waveform, then **Trim** (keep it), **Delete**, **Silence**, **Fade in/out**, or **Auto-trim** silence from both ends in one click. Drag the edges of a selection to fine-tune it. Undo/redo covers everything.
 - **Recording from anywhere.** Record a microphone, a line input, **desktop/system audio**, or **desktop + mic together**. You can record in mono or stereo. Existing tracks play while you record, so you can overdub.
 - **One-click mono ⇄ stereo.** Mix to mono (or keep only left or right), copy mono to both sides, swap L/R, split a stereo track into two mono tracks, or join two mono tracks into stereo. Export to mono or stereo.
 - **Non-destructive effects, like Blender's modifiers.** Each track has an effect stack. You can reorder it by dragging, toggle effects on and off, collapse them, duplicate them and reset them. Nothing touches your audio until you press **Apply** on one effect, on all of them, or on just the selection. The waveform shows the processed result live (press `V` to switch views).
-- **18 built-in effects:** Gain, Fade In, Fade Out, Normalize, Compressor, Limiter, Noise Gate, Equalizer, Filter, Reverb, Echo/Delay, Chorus, Distortion, Lo-Fi, Tremolo, Pan, Stereo Width and Reverse. There are also one-click presets: Voice Clean-up, Podcast Polish, Telephone, Lo-fi Tape and Big Hall.
+- **18 built-in effects:** Gain, Fade In, Fade Out, Normalize, Compressor, Limiter, Noise Gate, Equalizer, Filter, Reverb, Echo/Delay, Chorus, Distortion, Lo-Fi, Tremolo, Pan, Stereo Width and Reverse. There are also one-click presets (Voice Clean-up, Podcast Polish, Telephone, Lo-fi Tape and Big Hall). They're off by default; turn them on under Settings (the gear icon).
 - **Modern UI.** Dark glass theme, animated transport, GPU-friendly canvas waveforms that zoom down to individual samples, a command palette (`Ctrl/⌘+K`), drag-and-drop import, toasts and a live output meter.
 - **Projects.** Save and reopen `.tuff` projects. Effect stacks stay editable after a save. Export to WAV as 16-bit, 24-bit or 32-bit float, for the whole project or just the selection.
 
 ## Getting started
 
-**Windows:** download `TuffAudio.exe` and double-click it. There's nothing to install. Windows may show a "Windows protected your PC" warning because the app isn't code-signed. Click **More info → Run anyway**.
+**Windows:** download [`TuffAudio.exe`](https://github.com/KevinIsNotSeven/TuffAudio/releases/latest/download/TuffAudio.exe) and double-click it. There's nothing to install. Windows may show a "Windows protected your PC" warning because the app isn't code-signed. Click **More info → Run anyway**.
 
 **From source:**
 
@@ -58,7 +59,7 @@ Microphones and line inputs are recorded raw, with echo cancellation, noise supp
 | Command palette | `Ctrl/⌘+K` |
 | All shortcuts | `?` |
 
-On the mouse: drag to select, double-click to select a whole track, `Shift`+click to extend the selection, `Ctrl/⌘`+scroll to zoom, `Shift`+scroll to pan. Double-click any slider to reset it.
+On the mouse: drag down a waveform to select, double-click to select a whole track, and `Shift`+click to extend the selection. Scroll moves through time, `Ctrl/⌘`+scroll zooms, and `Shift`+scroll moves across tracks. While looping, moving or resizing the selection updates the loop as it plays. Double-click any slider to reset it.
 
 ## How it's built
 

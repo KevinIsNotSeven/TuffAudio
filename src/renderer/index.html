@@ -24,6 +24,7 @@
         <button class="tb-btn accent" data-action="export" data-icon="export" title="Export audio (Ctrl+Shift+E)">Export</button>
       </nav>
       <div class="project-name" id="projectName">Untitled</div>
+      <button class="tb-btn icon-only" id="settingsBtn" data-icon="settings" title="Settings"></button>
       <button class="palette-btn" data-action="palette" title="Command palette">
         <span data-icon="search"></span><span>Search commands</span><kbd>Ctrl K</kbd>
       </button>
@@ -75,12 +76,10 @@
 
     <main class="workspace">
       <section class="timeline" id="timeline">
-        <div class="ruler-row">
-          <div class="ruler-corner">
-            <button class="btn sm ghost" data-action="import" data-icon="plus" title="Add audio as a new track">Add audio</button>
-          </div>
-          <canvas id="ruler"></canvas>
+        <div class="ruler-corner">
+          <button class="btn sm ghost" data-action="import" data-icon="plus" title="Add audio as a new track">Add</button>
         </div>
+        <canvas id="ruler" title="Click to move the cursor · drag to select"></canvas>
         <div class="tracks-scroll" id="tracksScroll">
           <div id="tracks"></div>
           <div class="empty-state" id="emptyState">
@@ -99,9 +98,10 @@
             </div>
           </div>
         </div>
-        <div class="hscroll" id="hscroll"><div class="thumb"></div></div>
+        <div class="vscroll" id="vscroll"><div class="thumb"></div></div>
         <div class="playhead" id="playhead"></div>
       </section>
+      <div class="splitter" id="inspSplit" title="Drag to resize · double-click to reset"></div>
       <aside class="inspector" id="inspector"></aside>
     </main>
 
@@ -109,7 +109,7 @@
       <div class="sb-item" id="sbSel">Cursor 00:00.000</div>
       <div class="sb-item" id="sbInfo"></div>
       <div class="sb-spacer"></div>
-      <div class="sb-item hint" id="sbHint">Drag on a waveform to select · Ctrl+Scroll to zoom · Shift+Scroll to pan</div>
+      <div class="sb-item hint" id="sbHint">Drag down a waveform to select · Scroll to move through time · Ctrl+Scroll to zoom · Shift+Scroll for more tracks</div>
       <div class="master-meter" title="Output level">
         <span>OUT</span>
         <div class="meter-bars"><div class="mbar"><i></i><b></b></div><div class="mbar"><i></i><b></b></div></div>

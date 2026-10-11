@@ -21,7 +21,8 @@ export const state = {
   selection: { start: 0, end: 0 },
   selectedIds: new Set(),
   activeId: null,
-  view: { pps: 80, scrollX: 0, width: 800 },
+  /** Time axis runs top → bottom: pps = pixels per second, scroll = time at the top, span = visible pixels. */
+  view: { pps: 80, scroll: 0, span: 600 },
   loop: false,
   playing: false,
   recording: false,
@@ -30,14 +31,29 @@ export const state = {
   showProcessed: true,
 };
 
+// ---- Preferences (remembered between sessions) -------------------------------
+
+const PREFS_KEY = 'tuffaudio.prefs';
+const DEFAULT_PREFS = { showPresets: false, inspectorWidth: 360 };
+function loadPrefs() {
+  try { return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { ...DEFAULT_PREFS }; }
+}
+export const prefs = loadPrefs();
+export function setPref(key, value) {
+  prefs[key] = value;
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* storage unavailable */ }
+  emit('prefs', key);
+}
+
 let trackSeq = 0;
-export function createTrack({ name, channels, effects = [], gainDb = 0, pan = 0, mute = false, solo = false, color }) {
+export function createTrack({ name, channels, effects = [], gainDb = 0, pan = 0, mute = false, solo = false, color, width = null }) {
   const n = trackSeq++;
   return {
     id: `t${Date.now().toString(36)}${n}`,
     name: name || `Track ${state.tracks.length + 1}`,
     color: color || COLORS[n % COLORS.length],
     channels, effects, gainDb, pan, mute, solo,
+    width, // column width in px (null = default)
   };
 }
 

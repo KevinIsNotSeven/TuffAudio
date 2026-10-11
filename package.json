@@ -1,7 +1,7 @@
 {
   "name": "tuffaudio",
   "productName": "TuffAudio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A modern, fast audio editor: quick trimming, desktop/mic/line recording, one-click mono/stereo, and a non-destructive effect stack.",
   "license": "MIT",
   "type": "module",

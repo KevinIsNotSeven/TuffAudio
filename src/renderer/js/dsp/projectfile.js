@@ -10,7 +10,7 @@ export function serializeProject({ sampleRate, tracks }) {
     app: 'TuffAudio',
     sampleRate,
     tracks: tracks.map((t) => ({
-      name: t.name, color: t.color, gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+      name: t.name, color: t.color, gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo, width: t.width ?? null,
       frames: t.channels[0]?.length ?? 0, channels: t.channels.length,
       effects: t.effects.map(({ type, enabled, params, collapsed }) => ({ type, enabled, params, collapsed })),
     })),

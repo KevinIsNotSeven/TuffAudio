@@ -21,11 +21,15 @@ jobs:
       - run: npm test
       - name: Build portable TuffAudio.exe
         run: npx electron-builder --win portable --x64 --publish never
+      - name: Read version
+        id: v
+        shell: bash
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0
-          name: TuffAudio 0.1.0 for Windows
+          tag_name: v${{ steps.v.outputs.version }}
+          name: TuffAudio ${{ steps.v.outputs.version }} for Windows
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: dist/TuffAudio.exe

@@ -1,7 +1,7 @@
 // Right-hand inspector: track info, mono/stereo controls, and the
 // non-destructive effect ("modifier") stack for the active track.
 
-import { state, on, emit, activeTrack, checkpoint, trackDuration, hasRange } from '../state.js';
+import { state, on, emit, activeTrack, checkpoint, trackDuration, hasRange, prefs } from '../state.js';
 import { EFFECTS, CATEGORIES, PRESETS, createEffect, defaultParams } from '../audio/effects.js';
 import { run, addEffect, addPreset, applyEffect } from '../actions.js';
 import { $, h, iconEl, popover, closeMenu, segmented, formatTime } from './dom.js';
@@ -15,6 +15,7 @@ export function initInspector() {
   on('tracks', rerender);
   on('effects-ui', (e) => render(e?.focus));
   on('view', updatePreviewToggle);
+  on('prefs', (k) => { if (k === 'showPresets') render(); });
   on('focus-inspector', () => root.querySelector('.add-fx')?.focus());
   render();
 }
@@ -66,11 +67,11 @@ function render(focusId) {
   const list = h('div.fx-list');
   t.effects.forEach((fx, i) => list.append(card(t, fx, i, fx.id === focusId)));
   if (!t.effects.length) {
-    list.append(h('div.fx-empty', {}, 'No effects yet. Add one below or start from a preset — you can always change your mind.'));
+    list.append(h('div.fx-empty', {}, prefs.showPresets ? 'No effects yet. Add one below or start from a preset — you can always change your mind.' : 'No effects yet. Add one below — you can always change your mind.'));
   }
 
   const addBtn = h('button.add-fx', { onclick: (e) => browser(e.currentTarget) }, iconEl('plus'), 'Add effect');
-  const presets = h('div.presets', {},
+  const presets = prefs.showPresets && h('div.presets', {},
     h('div.field-label', {}, 'Quick presets'),
     h('div.preset-chips', {}, ...PRESETS.map((p) => h('button.chip.preset', { title: p.description, onclick: () => addPreset(p) }, iconEl('sparkles'), p.name))));
 
@@ -239,7 +240,7 @@ function browser(anchor) {
         grid.append(b);
       }
     }
-    const presets = PRESETS.filter((p) => !q || p.name.toLowerCase().includes(q));
+    const presets = prefs.showPresets ? PRESETS.filter((p) => !q || p.name.toLowerCase().includes(q)) : [];
     if (presets.length) {
       grid.append(h('div.fxb-cat', {}, 'Presets'));
       for (const p of presets) {

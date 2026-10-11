@@ -3,7 +3,7 @@
 // recorder AudioWorklet load cleanly), wires up desktop-audio loopback capture
 // and native save dialogs.
 
-const { app, BrowserWindow, protocol, net, session, desktopCapturer, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, protocol, net, session, desktopCapturer, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
@@ -48,13 +48,34 @@ function enableDesktopAudioCapture() {
   });
 }
 
+// Remember the window size/position between launches.
+const boundsFile = () => path.join(app.getPath('userData'), 'window.json');
+function loadBounds() {
+  let b;
+  try { b = JSON.parse(require('node:fs').readFileSync(boundsFile(), 'utf8')); } catch { return {}; }
+  // Ignore a saved position that's no longer on any connected screen.
+  const visible = screen.getAllDisplays().some(({ workArea: a }) =>
+    b.x < a.x + a.width - 80 && b.x + b.width > a.x + 80 && b.y >= a.y - 20 && b.y < a.y + a.height - 80);
+  if (!visible) { delete b.x; delete b.y; }
+  return b;
+}
+function saveBounds(win) {
+  const data = { ...win.getNormalBounds(), maximized: win.isMaximized() };
+  try { require('node:fs').writeFileSync(boundsFile(), JSON.stringify(data)); } catch { /* not fatal */ }
+}
+
 function createWindow() {
   const isMac = process.platform === 'darwin';
+  const saved = loadBounds();
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 980,
-    minHeight: 600,
+    width: saved.width || 1440,
+    height: saved.height || 900,
+    x: saved.x,
+    y: saved.y,
+    minWidth: 760,
+    minHeight: 480,
+    resizable: true,
+    maximizable: true,
     backgroundColor: '#0a0c11',
     title: 'TuffAudio',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
@@ -71,6 +92,13 @@ function createWindow() {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  if (saved.maximized) win.maximize();
+  let t;
+  const persist = () => { clearTimeout(t); t = setTimeout(() => saveBounds(win), 400); };
+  win.on('resize', persist);
+  win.on('move', persist);
+  win.on('close', () => saveBounds(win));
 
   win.loadURL('app://tuff/index.html');
 }

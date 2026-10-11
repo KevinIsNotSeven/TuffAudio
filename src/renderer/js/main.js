@@ -1,7 +1,7 @@
 // TuffAudio renderer entry: wires toolbar, shortcuts, recording source picker,
 // status bar, drag-and-drop and the command palette.
 
-import { state, on, hasRange, projectDuration } from './state.js';
+import { state, on, emit, hasRange, projectDuration, prefs, setPref } from './state.js';
 import { actions, run, importFiles, recorder } from './actions.js';
 import { masterLevels } from './audio/engine.js';
 import { listSources } from './audio/recorder.js';
@@ -31,6 +31,8 @@ function boot() {
   setupSourcePicker();
   setupKeyboard();
   setupDragDrop();
+  setupInspectorResize();
+  setupSettings();
 
   for (const evt of ['selection', 'tracks', 'history', 'active', 'transport', 'effects-ui', 'effects', 'audio']) on(evt, refreshUi);
   on('project', () => { $('#projectName').textContent = state.projectName; document.title = `${state.projectName} — TuffAudio`; });
@@ -51,7 +53,7 @@ function refreshUi() {
   play.innerHTML = icon(state.playing ? 'pause' : 'play');
   play.classList.toggle('on', state.playing);
   $('#recBtn').classList.toggle('recording', state.recording);
-  $('#recBtn').classList.toggle('arming', recorder.busy && !state.recording);
+  $('#recBtn').classList.toggle('arming', !!recorder.busy && !state.recording);
   $('#recBtn').disabled = false;
   $('#loopBtn').classList.toggle('on', state.loop);
   for (const id of ['undo', 'redo']) {
@@ -143,6 +145,56 @@ function setupSourcePicker() {
   });
 }
 
+// ---- Resizable inspector panel -----------------------------------------------------
+
+const INSP_MIN = 260, INSP_DEFAULT = 360;
+function applyInspectorWidth(w) {
+  const max = Math.max(INSP_MIN, window.innerWidth - 420);
+  const clamped = Math.round(Math.max(INSP_MIN, Math.min(max, w)));
+  document.documentElement.style.setProperty('--insp-w', `${clamped}px`);
+  return clamped;
+}
+
+function setupInspectorResize() {
+  const split = $('#inspSplit');
+  applyInspectorWidth(prefs.inspectorWidth);
+  window.addEventListener('resize', () => applyInspectorWidth(prefs.inspectorWidth));
+  split.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    split.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing-insp');
+    let w = prefs.inspectorWidth;
+    const move = (ev) => { w = applyInspectorWidth(window.innerWidth - ev.clientX - 3); };
+    const up = () => {
+      document.body.classList.remove('resizing-insp');
+      split.removeEventListener('pointermove', move);
+      split.removeEventListener('pointerup', up);
+      setPref('inspectorWidth', w);
+    };
+    split.addEventListener('pointermove', move);
+    split.addEventListener('pointerup', up);
+  });
+  split.addEventListener('dblclick', () => setPref('inspectorWidth', applyInspectorWidth(INSP_DEFAULT)));
+}
+
+// ---- Settings ------------------------------------------------------------------------------
+
+function setupSettings() {
+  const btn = $('#settingsBtn');
+  btn.addEventListener('click', () => {
+    const row = (label, sub, key) => {
+      const sw = h('button.switch', { class: prefs[key] ? 'on' : '', onclick: () => { setPref(key, !prefs[key]); sw.classList.toggle('on', prefs[key]); } }, h('span'));
+      return h('label.setting-row', {}, h('span.menu-label', {}, label, h('small', {}, sub)), sw);
+    };
+    popover(btn, h('div.settings-panel', {},
+      h('div.menu-heading', {}, 'Settings'),
+      row('Quick presets', 'One-click effect stacks like “Voice Clean-up”', 'showPresets'),
+      h('div.menu-sep'),
+      h('button.menu-item', { onclick: () => { closeMenu(); setPref('inspectorWidth', applyInspectorWidth(INSP_DEFAULT)); for (const t of state.tracks) t.width = null; emit('tracks'); } }, iconEl('refresh'), h('span.menu-label', {}, 'Reset panel and column sizes')),
+    ), { align: 'end' });
+  });
+}
+
 // ---- Keyboard ---------------------------------------------------------------------------
 
 function comboOf(e) {
@@ -211,13 +263,16 @@ function openPalette() {
   const input = h('input.palette-input', { placeholder: 'Type a command — trim, mono, reverb, export…', spellcheck: false });
   const list = h('div.palette-list');
   let items = [], sel = 0;
-  const all = Object.values(actions).filter((a) => a.id !== 'palette' && a.label);
+  const all = Object.values(actions).filter((a) => a.id !== 'palette' && a.label && !a.hidden?.());
   const draw = () => {
     const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
     items = all.filter((a) => {
       const hay = `${a.dynamicLabel?.() || a.label} ${a.group} ${a.description || ''}`.toLowerCase();
       return words.every((w) => hay.includes(w));
-    }).sort((a, b) => Number(b.enabled()) - Number(a.enabled()));
+    });
+    // Rank: enabled first, then commands whose own name matches (not just e.g. "Undo <last edit>").
+    const rank = (a) => (a.enabled() ? 0 : 2) + (words.every((w) => a.label.toLowerCase().includes(w)) ? 0 : 1);
+    items.sort((a, b) => rank(a) - rank(b));
     sel = Math.min(sel, Math.max(0, items.length - 1));
     list.replaceChildren(...items.slice(0, 60).map((a, i) => h('button.palette-item', {
       class: [i === sel ? 'sel' : '', a.enabled() ? '' : 'disabled'].join(' '),

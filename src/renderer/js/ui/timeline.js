@@ -1,5 +1,6 @@
-// Timeline: ruler, track rows (header + waveform lane), playhead, scrollbar and
-// all pointer interaction (select, drag edges, scrub, zoom).
+// Timeline: time runs top → bottom, tracks are side-by-side columns.
+// The scroll wheel moves through time; Shift+wheel scrolls across tracks;
+// Ctrl/⌘+wheel zooms. Columns can be resized by dragging their right edge.
 
 import { state, on, emit, setSelection, setActive, hasRange, projectDuration, trackDuration, checkpoint, getTrack } from '../state.js';
 import { peaks, PEAK_BLOCK } from '../dsp/analysis.js';
@@ -7,49 +8,52 @@ import { previews, seek, tick } from '../audio/engine.js';
 import { run, recorder, zoomAround } from '../actions.js';
 import { $, $$, h, iconEl, popover, formatTime } from './dom.js';
 
-const HEAD_W = 236;
-let area, scroller, rowsEl, rulerCv, playheadEl, hbar, hthumb, emptyEl;
+export const HEAD_H = 138;
+export const COL_W = 260;
+const COL_MIN = 150, COL_MAX = 900;
+let area, scroller, colsEl, rulerCv, playheadEl, vbar, vthumb, emptyEl;
 const dpr = () => window.devicePixelRatio || 1;
 
-const xToTime = (x) => state.view.scrollX + x / state.view.pps;
-const timeToX = (t) => (t - state.view.scrollX) * state.view.pps;
+// "pos" = pixels along the time axis (downwards from the top of the lanes).
+const posToTime = (y) => state.view.scroll + y / state.view.pps;
+const timeToPos = (t) => (t - state.view.scroll) * state.view.pps;
 
 export function initTimeline() {
   area = $('#timeline');
   scroller = $('#tracksScroll');
-  rowsEl = $('#tracks');
+  colsEl = $('#tracks');
   rulerCv = $('#ruler');
   playheadEl = $('#playhead');
-  hbar = $('#hscroll');
-  hthumb = $('#hscroll .thumb');
+  vbar = $('#vscroll');
+  vthumb = $('#vscroll .thumb');
   emptyEl = $('#emptyState');
 
-  new ResizeObserver(layout).observe(scroller);
+  new ResizeObserver(layout).observe(area);
   setupRuler();
   setupWheel();
   setupScrollbar();
 
-  on('tracks', renderRows);
+  on('tracks', renderColumns);
   on('audio', () => drawAll());
   on('preview', (id) => drawTrack(id));
-  on('selection', () => { updateRowStates(); drawAll(); drawRuler(); });
-  on('active', updateRowStates);
-  on('trackprops', updateRowStates);
-  on('effects', updateRowStates);
-  on('effects-ui', updateRowStates);
+  on('selection', () => { updateColumnStates(); drawAll(); drawRuler(); });
+  on('active', updateColumnStates);
+  on('trackprops', updateColumnStates);
+  on('effects', updateColumnStates);
+  on('effects-ui', updateColumnStates);
   on('view', () => { clampScroll(); drawAll(); drawRuler(); updateScrollbar(); });
   on('transport', onTransport);
 
-  renderRows();
+  renderColumns();
   requestAnimationFrame(frame);
 }
 
 // ---- Layout -------------------------------------------------------------------
 
 function layout() {
-  const laneW = Math.max(100, scroller.clientWidth - HEAD_W);
-  state.view.width = laneW;
-  for (const cv of $$('canvas.wave', rowsEl)) sizeCanvas(cv);
+  const lane = colsEl.querySelector('.lane');
+  state.view.span = Math.max(100, lane ? lane.clientHeight : rulerCv.clientHeight);
+  for (const cv of $$('canvas.wave', colsEl)) sizeCanvas(cv);
   sizeCanvas(rulerCv);
   clampScroll();
   drawAll();
@@ -66,22 +70,24 @@ function sizeCanvas(cv) {
 }
 
 function contentDuration() {
-  return Math.max(projectDuration() + 2, state.view.width / state.view.pps);
+  return Math.max(projectDuration() + 2, state.view.span / state.view.pps);
 }
 
 function clampScroll() {
-  const max = Math.max(0, contentDuration() - state.view.width / state.view.pps);
-  state.view.scrollX = Math.max(0, Math.min(max, state.view.scrollX));
+  const max = Math.max(0, contentDuration() - state.view.span / state.view.pps);
+  state.view.scroll = Math.max(0, Math.min(max, state.view.scroll));
 }
 
-// ---- Track rows -----------------------------------------------------------------
+// ---- Track columns ------------------------------------------------------------
 
-function renderRows() {
-  rowsEl.replaceChildren(...state.tracks.map(rowFor));
-  if (state.recording) rowsEl.append(recordingRow());
+function renderColumns() {
+  const left = scroller.scrollLeft;
+  colsEl.replaceChildren(...state.tracks.map(columnFor));
+  if (state.recording) colsEl.append(recordingColumn());
   emptyEl.hidden = state.tracks.length > 0 || state.recording;
   layout();
-  updateRowStates();
+  updateColumnStates();
+  scroller.scrollLeft = left;
 }
 
 function slider({ min, max, step, value, onStart, onInput, onReset, cls = '' }) {
@@ -95,7 +101,7 @@ function slider({ min, max, step, value, onStart, onInput, onReset, cls = '' }) 
 const fmtPan = (p) => (Math.abs(p) < 0.01 ? 'C' : `${Math.round(Math.abs(p) * 100)}${p < 0 ? 'L' : 'R'}`);
 const fmtDb = (d) => (d <= -36 ? '−∞' : `${d > 0 ? '+' : ''}${d.toFixed(1)}`);
 
-function rowFor(t) {
+function columnFor(t) {
   const name = h('input.track-name', { value: t.name, spellcheck: false, title: 'Rename track' });
   name.addEventListener('change', () => { checkpoint('Rename'); t.name = name.value.trim() || t.name; emit('trackprops', t.id); emit('effects-ui', { id: t.id }); });
   name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); e.stopPropagation(); });
@@ -131,12 +137,46 @@ function rowFor(t) {
   const cv = h('canvas.wave');
   const lane = h('div.lane', {}, cv);
   setupLane(lane, cv, t.id);
-  return h('div.track-row', { 'data-id': t.id }, head, lane);
+  const col = h('div.track-col', { 'data-id': t.id, style: { width: `${t.width || COL_W}px` } }, head, lane);
+  col.append(resizeHandle(col, t));
+  return col;
 }
 
-function recordingRow() {
+/** Drag the right edge of a column to resize it; double-click resets. */
+function resizeHandle(col, t) {
+  const grip = h('div.col-resize', { title: 'Drag to resize · double-click to reset' });
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, w0 = col.offsetWidth;
+    document.body.classList.add('resizing-col');
+    const move = (ev) => {
+      t.width = Math.max(COL_MIN, Math.min(COL_MAX, Math.round(w0 + ev.clientX - x0)));
+      col.style.width = `${t.width}px`;
+      const cv = col.querySelector('canvas.wave');
+      sizeCanvas(cv);
+      drawCol(col);
+    };
+    const up = () => {
+      document.body.classList.remove('resizing-col');
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+  });
+  grip.addEventListener('dblclick', () => {
+    t.width = null;
+    col.style.width = `${COL_W}px`;
+    sizeCanvas(col.querySelector('canvas.wave'));
+    drawCol(col);
+  });
+  return grip;
+}
+
+function recordingColumn() {
   const cv = h('canvas.wave');
-  return h('div.track-row.recording', { 'data-id': '__rec' },
+  return h('div.track-col.recording', { 'data-id': '__rec', style: { width: `${COL_W}px` } },
     h('div.track-head', {},
       h('div.color', { style: { background: 'var(--rec)' } }),
       h('div.th-row', {}, h('span.rec-dot'), h('span.rec-title', {}, 'Recording…')),
@@ -167,8 +207,8 @@ function trackMenu(t, anchor) {
   const i = state.tracks.indexOf(t);
   popover(anchor, [
     { label: 'Duplicate track', icon: 'copy', run: () => run('duplicateTrack', t.id) },
-    { label: 'Move up', icon: 'arrowUp', disabled: i === 0, run: () => run('moveTrack', t.id, -1) },
-    { label: 'Move down', icon: 'arrowDown', disabled: i === state.tracks.length - 1, run: () => run('moveTrack', t.id, 1) },
+    { label: 'Move left', icon: 'arrowLeft', disabled: i === 0, run: () => run('moveTrack', t.id, -1) },
+    { label: 'Move right', icon: 'arrowRight', disabled: i === state.tracks.length - 1, run: () => run('moveTrack', t.id, 1) },
     { separator: true },
     t.channels.length > 1
       ? { label: 'Convert to mono', icon: 'mono', run: () => run('toMono', 'mix') }
@@ -179,105 +219,106 @@ function trackMenu(t, anchor) {
   ], { align: 'end' });
 }
 
-function updateRowStates() {
-  for (const row of $$('.track-row', rowsEl)) {
-    const t = getTrack(row.dataset.id);
+function updateColumnStates() {
+  for (const col of $$('.track-col', colsEl)) {
+    const t = getTrack(col.dataset.id);
     if (!t) continue;
-    row.classList.toggle('active', t.id === state.activeId);
-    row.classList.toggle('selected', state.selectedIds.has(t.id));
-    row.classList.toggle('muted', t.mute || (state.tracks.some((x) => x.solo) && !t.solo));
-    row.querySelector('.mute').classList.toggle('on', t.mute);
-    row.querySelector('.solo').classList.toggle('on', t.solo);
-    const chan = row.querySelector('.chan');
+    col.classList.toggle('active', t.id === state.activeId);
+    col.classList.toggle('selected', state.selectedIds.has(t.id));
+    col.classList.toggle('muted', t.mute || (state.tracks.some((x) => x.solo) && !t.solo));
+    col.querySelector('.mute').classList.toggle('on', t.mute);
+    col.querySelector('.solo').classList.toggle('on', t.solo);
+    const chan = col.querySelector('.chan');
     const stereo = t.channels.length > 1;
     chan.replaceChildren(iconEl(stereo ? 'stereo' : 'mono'), stereo ? 'Stereo' : 'Mono');
-    const fx = row.querySelector('.chip.fx');
+    const fx = col.querySelector('.chip.fx');
     const n = t.effects.length, on_ = t.effects.filter((e) => e.enabled).length;
     fx.replaceChildren(iconEl('sparkles'), n ? `${on_}/${n} fx` : 'Add fx');
     fx.classList.toggle('has', on_ > 0);
-    const name = row.querySelector('.track-name');
+    const name = col.querySelector('.track-name');
     if (document.activeElement !== name) name.value = t.name;
   }
 }
 
 // ---- Drawing ----------------------------------------------------------------------
+//
+// Waveforms are drawn in "timeline space" (u = time pixels, v = across the lane)
+// and transposed onto the canvas, so the drawing code reads like a normal
+// left-to-right waveform while the result runs top to bottom.
 
 export function drawAll() {
-  for (const row of $$('.track-row', rowsEl)) drawRow(row);
+  for (const col of $$('.track-col', colsEl)) drawCol(col);
 }
 
 function drawTrack(id) {
-  const row = rowsEl.querySelector(`.track-row[data-id="${id}"]`);
-  if (row) drawRow(row);
+  const col = colsEl.querySelector(`.track-col[data-id="${id}"]`);
+  if (col) drawCol(col);
 }
 
-function drawRow(row) {
-  const cv = row.querySelector('canvas.wave');
+function drawCol(col) {
+  const cv = col.querySelector('canvas.wave');
   if (!cv || !cv.width) return;
   const g = cv.getContext('2d');
   const W = cv.width, H = cv.height, k = dpr();
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.clearRect(0, 0, W, H);
-  g.scale(k, k);
-  const w = W / k, hh = H / k;
+  g.setTransform(0, k, k, 0, 0, 0); // u → y, v → x
+  const len = H / k, across = W / k; // time-axis length, cross-axis size
 
-  drawGrid(g, w, hh);
+  drawGrid(g, len, across);
 
-  if (row.dataset.id === '__rec') { drawRecording(g, w, hh); return; }
-  const t = getTrack(row.dataset.id);
+  if (col.dataset.id === '__rec') { drawRecording(g, len, across); return; }
+  const t = getTrack(col.dataset.id);
   if (!t) return;
 
   // Area past the end of this track.
-  const endX = timeToX(trackDuration(t));
-  if (endX < w) { g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(Math.max(0, endX), 0, w, hh); }
+  const endU = timeToPos(trackDuration(t));
+  if (endU < len) { g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(Math.max(0, endU), 0, len, across); }
 
   // Selection
   const { start, end } = state.selection;
   const selected = state.selectedIds.has(t.id);
   if (end > start) {
-    const x0 = timeToX(start), x1 = timeToX(end);
+    const u0 = timeToPos(start), u1 = timeToPos(end);
     g.fillStyle = selected ? 'rgba(139,123,255,0.22)' : 'rgba(255,255,255,0.035)';
-    g.fillRect(x0, 0, x1 - x0, hh);
+    g.fillRect(u0, 0, u1 - u0, across);
     if (selected) {
       g.fillStyle = 'rgba(167,155,255,0.9)';
-      g.fillRect(Math.round(x0), 0, 1, hh);
-      g.fillRect(Math.round(x1) - 1, 0, 1, hh);
+      g.fillRect(Math.round(u0), 0, 1, across);
+      g.fillRect(Math.round(u1) - 1, 0, 1, across);
     }
   }
 
   const pre = state.showProcessed ? previews.get(t.id) : null;
   const nCh = t.channels.length;
-  const band = hh / nCh;
+  const band = across / nCh;
   for (let c = 0; c < nCh; c++) {
     const top = c * band;
     g.fillStyle = 'rgba(255,255,255,0.06)';
-    g.fillRect(0, top + band / 2, w, 1);
+    g.fillRect(0, top + band / 2, len, 1);
     if (pre) {
-      drawWave(g, t.channels[c], w, top, band, t.color, 0.22, true);
-      drawWave(g, pre.channels[Math.min(c, pre.channels.length - 1)], w, top, band, t.color, 1);
-    } else drawWave(g, t.channels[c], w, top, band, t.color, t.mute ? 0.45 : 1);
-    if (nCh > 1) {
-      g.fillStyle = 'rgba(255,255,255,0.35)';
-      g.font = '600 9px var(--font-ui, system-ui)';
-      g.fillText(c === 0 ? 'L' : 'R', 6, top + 12);
-    }
+      drawWave(g, t.channels[c], len, top, band, t.color, 0.22, true);
+      drawWave(g, pre.channels[Math.min(c, pre.channels.length - 1)], len, top, band, t.color, 1);
+    } else drawWave(g, t.channels[c], len, top, band, t.color, t.mute ? 0.45 : 1);
   }
-  if (nCh > 1) { g.fillStyle = 'rgba(255,255,255,0.08)'; g.fillRect(0, band, w, 1); }
-  if (pre) {
-    g.font = '600 9px system-ui';
-    g.fillStyle = 'rgba(255,255,255,0.4)';
-    g.fillText('FX PREVIEW', w - 70, hh - 8);
-  }
+  if (nCh > 1) { g.fillStyle = 'rgba(255,255,255,0.08)'; g.fillRect(0, band, len, 1); }
+
+  // Labels are drawn upright, in normal screen space.
+  g.setTransform(k, 0, 0, k, 0, 0);
+  g.font = '600 9px system-ui';
+  g.fillStyle = 'rgba(255,255,255,0.35)';
+  if (nCh > 1) for (let c = 0; c < nCh; c++) g.fillText(c === 0 ? 'L' : 'R', c * band + 6, 12);
+  if (pre) { g.fillStyle = 'rgba(255,255,255,0.4)'; g.fillText('FX PREVIEW', across - 64, len - 8); }
 }
 
-function drawGrid(g, w, hh) {
+function drawGrid(g, len, across) {
   const { step } = tickStep();
   g.fillStyle = 'rgba(255,255,255,0.035)';
-  const t0 = Math.floor(state.view.scrollX / step) * step;
+  const t0 = Math.floor(state.view.scroll / step) * step;
   for (let t = t0; ; t += step) {
-    const x = timeToX(t);
-    if (x > w) break;
-    g.fillRect(Math.round(x), 0, 1, hh);
+    const u = timeToPos(t);
+    if (u > len) break;
+    g.fillRect(Math.round(u), 0, 1, across);
   }
 }
 
@@ -303,41 +344,41 @@ function lighten(hex) {
   return '#' + [f((n >> 16) & 255), f((n >> 8) & 255), f(n & 255)].map((c) => c.toString(16).padStart(2, '0')).join('');
 }
 
-function drawWave(g, data, w, top, band, color, alpha, ghost = false) {
+function drawWave(g, data, len, top, band, color, alpha, ghost = false) {
   if (!data?.length) return;
   const sr = state.sampleRate, pps = state.view.pps;
   const spp = sr / pps;
   const mid = top + band / 2;
   const amp = (band / 2) * 0.9;
-  const startX = Math.max(0, Math.floor(timeToX(0)));
-  const endX = Math.min(w, Math.ceil(timeToX(data.length / sr)));
-  if (endX <= startX) return;
+  const startU = Math.max(0, Math.floor(timeToPos(0)));
+  const endU = Math.min(len, Math.ceil(timeToPos(data.length / sr)));
+  if (endU <= startU) return;
 
   if (spp < 2) {
     // Zoomed in to sample level: draw the actual waveform line.
     g.strokeStyle = withAlpha(color, alpha);
     g.lineWidth = ghost ? 1 : 1.5;
     g.beginPath();
-    const s0 = Math.max(0, Math.floor(xToTime(startX) * sr) - 1);
-    const s1 = Math.min(data.length, Math.ceil(xToTime(endX) * sr) + 1);
+    const s0 = Math.max(0, Math.floor(posToTime(startU) * sr) - 1);
+    const s1 = Math.min(data.length, Math.ceil(posToTime(endU) * sr) + 1);
     for (let s = s0; s < s1; s++) {
-      const x = timeToX(s / sr), y = mid - data[s] * amp;
-      if (s === s0) g.moveTo(x, y); else g.lineTo(x, y);
+      const u = timeToPos(s / sr), v = mid - data[s] * amp;
+      if (s === s0) g.moveTo(u, v); else g.lineTo(u, v);
     }
     g.stroke();
     if (spp < 0.12 && !ghost) {
       g.fillStyle = withAlpha(color, alpha);
-      for (let s = s0; s < s1; s++) { g.beginPath(); g.arc(timeToX(s / sr), mid - data[s] * amp, 2.2, 0, Math.PI * 2); g.fill(); }
+      for (let s = s0; s < s1; s++) { g.beginPath(); g.arc(timeToPos(s / sr), mid - data[s] * amp, 2.2, 0, Math.PI * 2); g.fill(); }
     }
     return;
   }
 
   const pk = spp >= PEAK_BLOCK ? peaks(data) : null;
-  const mins = new Float32Array(endX - startX);
-  const maxs = new Float32Array(endX - startX);
-  for (let x = startX; x < endX; x++) {
-    const a = Math.floor(xToTime(x) * sr);
-    const b = Math.max(a + 1, Math.floor(xToTime(x + 1) * sr));
+  const mins = new Float32Array(endU - startU);
+  const maxs = new Float32Array(endU - startU);
+  for (let u = startU; u < endU; u++) {
+    const a = Math.floor(posToTime(u) * sr);
+    const b = Math.max(a + 1, Math.floor(posToTime(u + 1) * sr));
     let mn = 1, mx = -1;
     if (pk) {
       const b0 = Math.floor(a / PEAK_BLOCK), b1 = Math.min(pk.length / 2, Math.ceil(b / PEAK_BLOCK));
@@ -347,39 +388,39 @@ function drawWave(g, data, w, top, band, color, alpha, ghost = false) {
       for (let i = a; i < end; i++) { const v = data[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
     }
     if (mn > mx) { mn = 0; mx = 0; }
-    mins[x - startX] = mn;
-    maxs[x - startX] = mx;
+    mins[u - startU] = mn;
+    maxs[u - startU] = mx;
   }
   g.beginPath();
-  for (let i = 0; i < maxs.length; i++) g.lineTo(startX + i, mid - Math.max(maxs[i] * amp, 0.5));
-  for (let i = mins.length - 1; i >= 0; i--) g.lineTo(startX + i + 1, mid - Math.min(mins[i] * amp, -0.5));
+  for (let i = 0; i < maxs.length; i++) g.lineTo(startU + i, mid - Math.max(maxs[i] * amp, 0.5));
+  for (let i = mins.length - 1; i >= 0; i--) g.lineTo(startU + i + 1, mid - Math.min(mins[i] * amp, -0.5));
   g.closePath();
   if (ghost) { g.fillStyle = withAlpha('#ffffff', 0.07); g.fill(); g.strokeStyle = withAlpha(color, alpha); g.lineWidth = 1; g.stroke(); }
   else { g.fillStyle = gradient(g, color, top, band, alpha); g.fill(); }
 }
 
-function drawRecording(g, w, hh) {
+function drawRecording(g, len, across) {
   const p = recorder.peaks;
   const sr = state.sampleRate;
-  const mid = hh / 2, amp = hh / 2 * 0.9;
+  const mid = across / 2, amp = across / 2 * 0.9;
   g.fillStyle = 'rgba(255,77,109,0.85)';
   const blocks = p.length / 2;
-  for (let x = 0; x < w; x++) {
-    const t0 = xToTime(x) - state.recordStart, t1 = xToTime(x + 1) - state.recordStart;
+  for (let u = 0; u < len; u++) {
+    const t0 = posToTime(u) - state.recordStart, t1 = posToTime(u + 1) - state.recordStart;
     if (t1 < 0) continue;
     const b0 = Math.max(0, Math.floor((t0 * sr) / PEAK_BLOCK)), b1 = Math.min(blocks, Math.ceil((t1 * sr) / PEAK_BLOCK));
     if (b0 >= blocks) break;
     let mn = 0, mx = 0;
     for (let i = b0; i < b1; i++) { if (p[i * 2] < mn) mn = p[i * 2]; if (p[i * 2 + 1] > mx) mx = p[i * 2 + 1]; }
-    g.fillRect(x, mid - mx * amp, 1, Math.max(1, (mx - mn) * amp));
+    g.fillRect(u, mid - mx * amp, 1, Math.max(1, (mx - mn) * amp));
   }
 }
 
-// ---- Ruler ----------------------------------------------------------------------------
+// ---- Ruler (vertical, on the left) ---------------------------------------------------
 
 const STEPS = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
 function tickStep() {
-  const step = STEPS.find((s) => s * state.view.pps >= 90) ?? 3600;
+  const step = STEPS.find((s) => s * state.view.pps >= 70) ?? 3600;
   return { step, minor: step / 5 };
 }
 function fmtTick(t, step) {
@@ -394,43 +435,43 @@ function drawRuler() {
   const g = cv.getContext('2d');
   const k = dpr();
   g.setTransform(k, 0, 0, k, 0, 0);
-  const w = cv.width / k, hh = cv.height / k;
-  g.clearRect(0, 0, w, hh);
+  const w = cv.width / k, len = cv.height / k;
+  g.clearRect(0, 0, w, len);
 
   const { start, end } = state.selection;
   if (end > start) {
     g.fillStyle = state.loop ? 'rgba(47,212,198,0.28)' : 'rgba(139,123,255,0.28)';
-    g.fillRect(timeToX(start), 0, timeToX(end) - timeToX(start), hh);
+    g.fillRect(0, timeToPos(start), w, timeToPos(end) - timeToPos(start));
   }
   const { step, minor } = tickStep();
   g.font = '500 10px ui-monospace, SFMono-Regular, Menlo, monospace';
   g.textBaseline = 'top';
-  const t0 = Math.floor(state.view.scrollX / minor) * minor;
+  const t0 = Math.floor(state.view.scroll / minor) * minor;
   for (let i = 0; ; i++) {
     const t = t0 + i * minor;
-    const x = Math.round(timeToX(t));
-    if (x > w) break;
+    const y = Math.round(timeToPos(t));
+    if (y > len) break;
     const major = Math.abs(t / step - Math.round(t / step)) < 1e-6;
     g.fillStyle = major ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.14)';
-    g.fillRect(x, major ? hh - 12 : hh - 6, 1, major ? 12 : 6);
-    if (major) { g.fillStyle = 'rgba(220,226,240,0.7)'; g.fillText(fmtTick(t, step), x + 4, 6); }
+    g.fillRect(major ? w - 14 : w - 6, y, major ? 14 : 6, 1);
+    if (major) { g.fillStyle = 'rgba(220,226,240,0.7)'; g.fillText(fmtTick(t, step), 6, y + 3); }
   }
-  // Cursor marker
-  const cx = timeToX(start);
+  // Cursor marker (points into the tracks)
+  const cy = timeToPos(start);
   g.fillStyle = '#a79bff';
-  g.beginPath(); g.moveTo(cx - 5, hh - 8); g.lineTo(cx + 5, hh - 8); g.lineTo(cx, hh - 1); g.fill();
+  g.beginPath(); g.moveTo(w - 8, cy - 5); g.lineTo(w - 8, cy + 5); g.lineTo(w - 1, cy); g.fill();
 }
 
 function setupRuler() {
   rulerCv.addEventListener('pointerdown', (e) => {
     const rect = rulerCv.getBoundingClientRect();
-    const t0 = Math.max(0, xToTime(e.clientX - rect.left));
+    const t0 = Math.max(0, posToTime(e.clientY - rect.top));
     let dragged = false;
     rulerCv.setPointerCapture(e.pointerId);
     setSelection(t0);
     seek(t0);
     const move = (ev) => {
-      const t = Math.max(0, xToTime(ev.clientX - rect.left));
+      const t = Math.max(0, posToTime(ev.clientY - rect.top));
       if (Math.abs(t - t0) * state.view.pps > 3) dragged = true;
       if (dragged) setSelection(t0, t);
     };
@@ -442,24 +483,23 @@ function setupRuler() {
 
 // ---- Lane interaction ---------------------------------------------------------------
 
-function rowIndexAt(clientY) {
-  const rows = $$('.track-row:not(.recording)', rowsEl);
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i].getBoundingClientRect();
-    if (clientY < r.bottom) return i;
+function columnIndexAt(clientX) {
+  const cols = $$('.track-col:not(.recording)', colsEl);
+  for (let i = 0; i < cols.length; i++) {
+    if (clientX < cols[i].getBoundingClientRect().right) return i;
   }
-  return rows.length - 1;
+  return cols.length - 1;
 }
 
 function setupLane(lane, cv, id) {
   lane.addEventListener('pointermove', (e) => {
     if (e.buttons) return;
-    lane.style.cursor = edgeAt(e, cv, id) ? 'ew-resize' : 'text';
+    lane.style.cursor = edgeAt(e, cv, id) ? 'ns-resize' : 'text';
   });
   lane.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     const rect = cv.getBoundingClientRect();
-    const tAt = (ev) => Math.max(0, xToTime(ev.clientX - rect.left));
+    const tAt = (ev) => Math.max(0, posToTime(ev.clientY - rect.top));
     const t = tAt(e);
     const edge = edgeAt(e, cv, id);
     const startIdx = state.tracks.findIndex((x) => x.id === id);
@@ -477,17 +517,17 @@ function setupLane(lane, cv, id) {
     lane.setPointerCapture(e.pointerId);
     const move = (ev) => {
       const tt = tAt(ev);
-      if (!moved && Math.abs(ev.clientX - e.clientX) < 3) return;
+      if (!moved && Math.abs(ev.clientY - e.clientY) < 3) return;
       moved = true;
-      // Dragging across rows extends the selection to those tracks.
+      // Dragging sideways across columns extends the selection to those tracks.
       if (!edge) {
-        const i = rowIndexAt(ev.clientY);
+        const i = columnIndexAt(ev.clientX);
         const [a, b] = [Math.min(startIdx, i), Math.max(startIdx, i)];
         const ids = state.tracks.slice(a, b + 1).map((x) => x.id);
         if (!(e.metaKey || e.ctrlKey)) state.selectedIds = new Set(ids); else ids.forEach((x) => state.selectedIds.add(x));
       }
       setSelection(anchor, tt);
-      autoScrollEdge(ev.clientX - rect.left);
+      autoScrollEdge(ev.clientY - rect.top);
     };
     const up = () => {
       lane.removeEventListener('pointermove', move);
@@ -508,66 +548,73 @@ function setupLane(lane, cv, id) {
 
 function edgeAt(e, cv, id) {
   if (!hasRange() || !state.selectedIds.has(id)) return null;
-  const x = e.clientX - cv.getBoundingClientRect().left;
-  if (Math.abs(x - timeToX(state.selection.start)) < 6) return 'start';
-  if (Math.abs(x - timeToX(state.selection.end)) < 6) return 'end';
+  const y = e.clientY - cv.getBoundingClientRect().top;
+  if (Math.abs(y - timeToPos(state.selection.start)) < 6) return 'start';
+  if (Math.abs(y - timeToPos(state.selection.end)) < 6) return 'end';
   return null;
 }
 
-function autoScrollEdge(x) {
-  const w = state.view.width;
-  if (x > w - 20) { state.view.scrollX += 20 / state.view.pps; emit('view'); }
-  else if (x < 20 && state.view.scrollX > 0) { state.view.scrollX -= 20 / state.view.pps; emit('view'); }
+function autoScrollEdge(y) {
+  const span = state.view.span;
+  if (y > span - 20) { state.view.scroll += 20 / state.view.pps; emit('view'); }
+  else if (y < 20 && state.view.scroll > 0) { state.view.scroll -= 20 / state.view.pps; emit('view'); }
 }
 
 function setupWheel() {
   area.addEventListener('wheel', (e) => {
+    if (e.target.closest('.track-head')) return; // let header sliders etc. behave normally
     const rect = rulerCv.getBoundingClientRect();
+    const px = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? state.view.span : 1;
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      const x = e.clientX - rect.left;
-      zoomAround(Math.exp(-e.deltaY * 0.0025), x >= 0 ? xToTime(x) : null);
-    } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const y = e.clientY - rect.top;
+      zoomAround(Math.exp(-e.deltaY * px * 0.0025), y >= 0 ? posToTime(y) : null);
+    } else if (e.shiftKey) {
       e.preventDefault();
-      state.view.scrollX += (e.shiftKey ? e.deltaY : e.deltaX) / state.view.pps;
+      scroller.scrollLeft += (e.deltaY || e.deltaX) * px;
+    } else if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      // Trackpad sideways swipe: native horizontal scroll across columns.
+    } else {
+      e.preventDefault();
+      state.view.scroll += (e.deltaY * px) / state.view.pps;
       emit('view');
     }
   }, { passive: false });
 }
 
-// ---- Horizontal scrollbar ----------------------------------------------------------------
+// ---- Time scrollbar (right edge) ------------------------------------------------------
 
 function updateScrollbar() {
   const total = contentDuration();
-  const visible = state.view.width / state.view.pps;
-  const bw = hbar.clientWidth;
-  const tw = Math.max(36, (visible / total) * bw);
-  hthumb.style.width = `${tw}px`;
-  hthumb.style.transform = `translateX(${(state.view.scrollX / Math.max(1e-9, total - visible)) * (bw - tw) || 0}px)`;
-  hbar.classList.toggle('hidden', visible >= total - 1e-6);
+  const visible = state.view.span / state.view.pps;
+  const bh = vbar.clientHeight;
+  const th = Math.max(36, (visible / total) * bh);
+  vthumb.style.height = `${th}px`;
+  vthumb.style.transform = `translateY(${(state.view.scroll / Math.max(1e-9, total - visible)) * (bh - th) || 0}px)`;
+  vbar.classList.toggle('hidden', visible >= total - 1e-6);
 }
 
 function setupScrollbar() {
-  hthumb.addEventListener('pointerdown', (e) => {
-    hthumb.setPointerCapture(e.pointerId);
-    const x0 = e.clientX, s0 = state.view.scrollX;
+  vthumb.addEventListener('pointerdown', (e) => {
+    vthumb.setPointerCapture(e.pointerId);
+    const y0 = e.clientY, s0 = state.view.scroll;
     const move = (ev) => {
-      const total = contentDuration(), visible = state.view.width / state.view.pps;
-      const bw = hbar.clientWidth, tw = hthumb.clientWidth;
-      state.view.scrollX = s0 + ((ev.clientX - x0) / (bw - tw)) * (total - visible);
+      const total = contentDuration(), visible = state.view.span / state.view.pps;
+      const bh = vbar.clientHeight, th = vthumb.clientHeight;
+      state.view.scroll = s0 + ((ev.clientY - y0) / (bh - th)) * (total - visible);
       emit('view');
     };
-    const up = () => { hthumb.removeEventListener('pointermove', move); hthumb.removeEventListener('pointerup', up); };
-    hthumb.addEventListener('pointermove', move);
-    hthumb.addEventListener('pointerup', up);
+    const up = () => { vthumb.removeEventListener('pointermove', move); vthumb.removeEventListener('pointerup', up); };
+    vthumb.addEventListener('pointermove', move);
+    vthumb.addEventListener('pointerup', up);
   });
 }
 
 // ---- Transport / animation ------------------------------------------------------------------
 
 function onTransport() {
-  const hasRecRow = !!rowsEl.querySelector('.recording');
-  if (state.recording !== hasRecRow) renderRows();
+  const hasRecCol = !!colsEl.querySelector('.recording');
+  if (state.recording !== hasRecCol) renderColumns();
 }
 
 let lastRecDraw = 0;
@@ -576,27 +623,26 @@ function frame(now) {
   emit('frame', pos);
 
   // Playhead + follow
-  const x = timeToX(pos);
-  if ((state.playing || state.recording) && (x > state.view.width - 30 || x < 0)) {
-    state.view.scrollX = Math.max(0, pos - (state.view.width * 0.1) / state.view.pps);
+  const p = timeToPos(pos);
+  if ((state.playing || state.recording) && (p > state.view.span - 30 || p < 0)) {
+    state.view.scroll = Math.max(0, pos - (state.view.span * 0.1) / state.view.pps);
     emit('view');
   }
-  const px = timeToX(pos);
-  playheadEl.style.transform = `translateX(${HEAD_W + px}px)`;
-  playheadEl.style.opacity = px < 0 || px > state.view.width ? 0 : 1;
+  const y = timeToPos(pos);
+  playheadEl.style.transform = `translateY(${HEAD_H + y}px)`;
+  playheadEl.style.opacity = y < 0 || y > state.view.span ? 0 : 1;
   playheadEl.classList.toggle('live', state.playing || state.recording);
   playheadEl.classList.toggle('rec', state.recording);
 
   if (state.recording && now - lastRecDraw > 60) {
     lastRecDraw = now;
-    const row = rowsEl.querySelector('.recording');
-    if (row) {
-      drawRow(row);
-      row.querySelector('.rec-time').textContent = formatTime(recorder.frames / state.sampleRate);
+    const col = colsEl.querySelector('.recording');
+    if (col) {
+      drawCol(col);
+      col.querySelector('.rec-time').textContent = formatTime(recorder.frames / state.sampleRate);
       const lvl = recorder.inputLevel();
-      row.querySelector('.rec-meter .fill').style.width = `${Math.min(100, Math.max(0, (1 + Math.log10(Math.max(lvl, 1e-4)) / 3) * 100))}%`;
+      col.querySelector('.rec-meter .fill').style.width = `${Math.min(100, Math.max(0, (1 + Math.log10(Math.max(lvl, 1e-4)) / 3) * 100))}%`;
     }
   }
   requestAnimationFrame(frame);
 }
-
