@@ -78,6 +78,8 @@ export function closeMenu() {
  * Items: {label, icon, hint, run, disabled, danger, checked} | {separator:true} | {heading:'...'}
  */
 export function popover(anchor, content, { align = 'start', onClose, className = '' } = {}) {
+  // Clicking the button that opened this popover toggles it closed.
+  if (openMenu && anchor instanceof Element && openMenu.anchor === anchor) { closeMenu(); return null; }
   closeMenu();
   const el = h(`div.popover${className ? '.' + className : ''}`);
   if (Array.isArray(content)) {
@@ -115,7 +117,7 @@ export function popover(anchor, content, { align = 'start', onClose, className =
   const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); } };
   document.addEventListener('pointerdown', outside, true);
   document.addEventListener('keydown', esc, true);
-  openMenu = { el, onClose, outside, esc };
+  openMenu = { el, onClose, outside, esc, anchor };
   return el;
 }
 

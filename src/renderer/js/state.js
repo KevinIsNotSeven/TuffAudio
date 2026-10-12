@@ -34,7 +34,7 @@ export const state = {
 // ---- Preferences (remembered between sessions) -------------------------------
 
 const PREFS_KEY = 'tuffaudio.prefs';
-const DEFAULT_PREFS = { showPresets: false, inspectorWidth: 360 };
+const DEFAULT_PREFS = { showPresets: false, inspectorWidth: 360, autoScroll: true, smooth: true, exportFormat: 'mp3', exportQuality: {} };
 function loadPrefs() {
   try { return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { ...DEFAULT_PREFS }; }
 }
@@ -43,6 +43,28 @@ export function setPref(key, value) {
   prefs[key] = value;
   try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* storage unavailable */ }
   emit('prefs', key);
+}
+
+/**
+ * Move/zoom the view. With smooth animations on, the timeline eases toward the
+ * target; otherwise it jumps. `anchor` keeps a time pinned under a pixel while zooming.
+ */
+export function animateView({ scroll, pps, anchor } = {}) {
+  const v = state.view;
+  if (!prefs.smooth) {
+    v.target = null;
+    if (pps) v.pps = pps;
+    if (anchor) v.scroll = Math.max(0, anchor.time - anchor.px / v.pps);
+    else if (scroll != null) v.scroll = scroll;
+    emit('view');
+    return;
+  }
+  const cur = v.target || { pps: v.pps, scroll: v.scroll, anchor: null };
+  v.target = {
+    pps: pps ?? cur.pps,
+    scroll: scroll ?? cur.scroll,
+    anchor: anchor ?? (scroll != null ? null : cur.anchor),
+  };
 }
 
 let trackSeq = 0;

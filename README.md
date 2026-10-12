@@ -2,14 +2,14 @@
 
 A modern audio editor in the spirit of Audacity, with a cleaner, faster workflow:
 
-- **Top-to-bottom timeline.** Time runs down the screen, and each track is a column. The scroll wheel moves through time, `Shift`+scroll moves across tracks, and `Ctrl/⌘`+scroll zooms. Drag a column's right edge to resize it, or drag the divider next to the side panel to resize the panel. TuffAudio remembers these sizes and the window size.
+- **Top-to-bottom timeline.** Time runs down the screen, and each track is a column. The scroll wheel moves through time, `Shift`+scroll moves across tracks, and `Ctrl/⌘`+scroll zooms. Drag a track's header sideways to move the track, drag a column's right edge to resize it, or drag the divider next to the side panel to resize the panel. Click a track name to select the track, and double-click it to rename the track. The follow button (`F`) turns auto-scroll during playback on or off, and Settings (the gear icon) has switches for smooth animations and quick presets. TuffAudio remembers these sizes and the window size.
 - **Quick trimming.** Drag down a waveform, then **Trim** (keep it), **Delete**, **Silence**, **Fade in/out**, or **Auto-trim** silence from both ends in one click. Drag the edges of a selection to fine-tune it. Undo/redo covers everything.
 - **Recording from anywhere.** Record a microphone, a line input, **desktop/system audio**, or **desktop + mic together**. You can record in mono or stereo. Existing tracks play while you record, so you can overdub.
 - **One-click mono ⇄ stereo.** Mix to mono (or keep only left or right), copy mono to both sides, swap L/R, split a stereo track into two mono tracks, or join two mono tracks into stereo. Export to mono or stereo.
 - **Non-destructive effects, like Blender's modifiers.** Each track has an effect stack. You can reorder it by dragging, toggle effects on and off, collapse them, duplicate them and reset them. Nothing touches your audio until you press **Apply** on one effect, on all of them, or on just the selection. The waveform shows the processed result live (press `V` to switch views).
 - **18 built-in effects:** Gain, Fade In, Fade Out, Normalize, Compressor, Limiter, Noise Gate, Equalizer, Filter, Reverb, Echo/Delay, Chorus, Distortion, Lo-Fi, Tremolo, Pan, Stereo Width and Reverse. There are also one-click presets (Voice Clean-up, Podcast Polish, Telephone, Lo-fi Tape and Big Hall). They're off by default; turn them on under Settings (the gear icon).
 - **Modern UI.** Dark glass theme, animated transport, GPU-friendly canvas waveforms that zoom down to individual samples, a command palette (`Ctrl/⌘+K`), drag-and-drop import, toasts and a live output meter.
-- **Projects.** Save and reopen `.tuff` projects. Effect stacks stay editable after a save. Export to WAV as 16-bit, 24-bit or 32-bit float, for the whole project or just the selection.
+- **Projects and export.** Save and reopen `.tuff` projects; effect stacks stay editable after a save. Export to **MP3, WAV, OGG (Vorbis), FLAC, Opus or AIFF**, in mono or stereo, for the whole project or just the selection.
 
 ## Getting started
 
@@ -56,6 +56,7 @@ Microphones and line inputs are recorded raw, with echo cancellation, noise supp
 | Auto-trim silence | `Ctrl/⌘+Shift+T` |
 | Undo / redo | `Ctrl/⌘+Z` / `Ctrl/⌘+Shift+Z` |
 | Zoom in / out / fit | `=` / `-` / `Ctrl/⌘+0` |
+| Auto-scroll on/off | `F` |
 | Command palette | `Ctrl/⌘+K` |
 | All shortcuts | `?` |
 
@@ -76,7 +77,9 @@ src/renderer/
     effects.js       Effect definitions: realtime Web Audio graphs or sample processors
     engine.js        Playback, live effect updates, offline rendering, export mixdown
     recorder.js      Mic / line / desktop / mixed capture through an AudioWorklet
-  js/dsp/            Pure functions: editing, analysis, WAV encoder, .tuff format
+  js/dsp/            Pure functions: editing, analysis, WAV/FLAC/AIFF/Ogg writers, .tuff format
+  js/audio/exporters.js  Export formats (MP3/Ogg Vorbis via bundled WebAssembly, Opus via WebCodecs)
+  vendor/            wasm-media-encoders (MIT): LAME MP3 + libvorbis compiled to WebAssembly
   js/ui/             Timeline (canvas waveforms), inspector (effect stack), widgets
 test/                Unit tests for the DSP and file formats
 ```

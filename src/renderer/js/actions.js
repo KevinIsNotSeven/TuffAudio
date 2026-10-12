@@ -4,11 +4,11 @@
 import {
   state, emit, checkpoint, undo as undoState, redo as undoRedo, createTrack, addTrack, setSelection, setActive,
   targetTracks, hasRange, projectDuration, activeTrack, getTrack, effectsChanged, clearHistory, canUndo, canRedo, undoLabel, redoLabel,
-  prefs, setPref,
+  prefs, setPref, animateView,
 } from './state.js';
 import * as E from './dsp/edit.js';
 import { detectSilenceBounds } from './dsp/analysis.js';
-import { encodeWav } from './dsp/wav.js';
+import { FORMATS, formatById, encodeAudio } from './audio/exporters.js';
 import { serializeProject, deserializeProject } from './dsp/projectfile.js';
 import { play, stop, seek, getCtx, decodeFile, renderMix, bakeEffects, enabledEffects, resample } from './audio/engine.js';
 import { Recorder } from './audio/recorder.js';
@@ -321,8 +321,29 @@ def('soloTrack', {
   label: 'Solo track', keys: 'S', group: 'Track', enabled: () => !!activeTrack(),
   run(id) { const t = id ? getTrack(id) : activeTrack(); t.solo = !t.solo; emit('trackprops', t.id); },
 });
+def('reorderTrack', {
+  label: 'Move track to position', group: 'Track', hidden: () => true, enabled: () => state.tracks.length > 1,
+  run(id, to) {
+    const i = state.tracks.findIndex((t) => t.id === id);
+    if (i < 0 || to === i) return;
+    checkpoint('Move track');
+    const [t] = state.tracks.splice(i, 1);
+    state.tracks.splice(Math.max(0, Math.min(state.tracks.length, to)), 0, t);
+    emit('tracks');
+  },
+});
+def('autoScroll', {
+  label: 'Auto-scroll while playing', icon: 'follow', keys: 'F', group: 'View',
+  dynamicLabel: () => (prefs.autoScroll ? 'Turn off auto-scroll' : 'Turn on auto-scroll'),
+  run() { setPref('autoScroll', !prefs.autoScroll); emit('transport'); toast(prefs.autoScroll ? 'Auto-scroll on — the view follows playback' : 'Auto-scroll off — the view stays put'); },
+});
+def('toggleSmooth', {
+  label: 'Smooth animations', icon: 'sparkles', group: 'View',
+  dynamicLabel: () => (prefs.smooth ? 'Turn off smooth animations' : 'Turn on smooth animations'),
+  run() { setPref('smooth', !prefs.smooth); },
+});
 def('moveTrack', {
-  label: 'Move track', group: 'Track', enabled: () => !!activeTrack(),
+  label: 'Move track', group: 'Track', hidden: () => true, enabled: () => !!activeTrack(),
   run(id, dir) {
     const i = state.tracks.findIndex((t) => t.id === id);
     const j = i + dir;
@@ -412,10 +433,11 @@ def('togglePresets', {
 export function zoomAround(factor, time = null) {
   const v = state.view;
   const t = time ?? (state.playing ? state.playhead : (sel().start + sel().end) / 2);
-  const px = (t - v.scroll) * v.pps;
-  v.pps = Math.max(2, Math.min(sr() * 2, v.pps * factor));
-  v.scroll = Math.max(0, t - px / v.pps);
-  emit('view');
+  // Keep the time under the pointer (or the cursor) fixed on screen while zooming.
+  const px = v.target?.anchor ? v.target.anchor.px : (t - v.scroll) * v.pps;
+  const time0 = v.target?.anchor && time == null ? v.target.anchor.time : t;
+  const pps = Math.max(2, Math.min(sr() * 2, (v.target?.pps ?? v.pps) * factor));
+  animateView({ pps, anchor: { time: time0, px } });
 }
 def('zoomIn', { label: 'Zoom in', icon: 'zoomIn', keys: '=', group: 'View', run: () => zoomAround(1.5) });
 def('zoomOut', { label: 'Zoom out', icon: 'zoomOut', keys: '-', group: 'View', run: () => zoomAround(1 / 1.5) });
@@ -423,18 +445,14 @@ def('zoomFit', {
   label: 'Zoom to fit', icon: 'fit', keys: 'Mod+0', group: 'View',
   run() {
     const d = projectDuration() || 10;
-    state.view.pps = Math.max(2, (state.view.span - 24) / d);
-    state.view.scroll = 0;
-    emit('view');
+    animateView({ pps: Math.max(2, (state.view.span - 24) / d), scroll: 0 });
   },
 });
 def('zoomSel', {
   label: 'Zoom to selection', icon: 'zoomIn', keys: 'Mod+E', group: 'View', enabled: hasRange,
   run() {
     const { start, end } = sel();
-    state.view.pps = Math.min(sr() * 2, (state.view.span - 24) / (end - start));
-    state.view.scroll = start;
-    emit('view');
+    animateView({ pps: Math.min(sr() * 2, (state.view.span - 24) / (end - start)), scroll: start });
   },
 });
 
@@ -527,51 +545,91 @@ def('save', {
 def('new', {
   label: 'New project', icon: 'file', keys: 'Mod+N', group: 'File',
   run() {
-    stop();
-    checkpoint('New project');
-    state.tracks = [];
-    state.projectName = 'Untitled';
-    setActive(null);
-    setSelection(0);
-    emit('tracks');
-    emit('project');
+    const reset = () => {
+      stop();
+      checkpoint('New project');
+      state.tracks = [];
+      state.projectName = 'Untitled';
+      setActive(null);
+      setSelection(0);
+      emit('tracks');
+      emit('project');
+    };
+    if (!state.tracks.length) return reset();
+    modal({
+      title: 'Start a new project?', width: 400,
+      body: h('p.confirm-text', {}, 'This clears all tracks. Anything you haven\u2019t saved or exported will be gone (you can still undo with Ctrl+Z).'),
+      actions: [{ label: 'Cancel' }, { label: 'New project', primary: true, run: reset }],
+    });
   },
 });
 
 def('export', {
   label: 'Export audio…', icon: 'export', keys: 'Mod+Shift+E', group: 'File', enabled: needTracks,
   run() {
-    const opts = { bits: 16, channels: 2, range: hasRange() ? 'selection' : 'all' };
     const allMono = state.tracks.every((t) => t.channels.length === 1 && Math.abs(t.pan) < 0.01 && !t.effects.some((e) => e.enabled && ['pan', 'width', 'chorus'].includes(e.type)));
-    if (allMono) opts.channels = 1;
+    const opts = { format: formatById(prefs.exportFormat).id, channels: allMono ? 1 : 2, range: hasRange() ? 'selection' : 'all', quality: { ...(prefs.exportQuality || {}) } };
     const nameInput = h('input.text', { value: state.projectName, spellcheck: false });
+    const ext = h('span', {});
+    const qualityRow = h('div.form-row');
     const row = (label, ctrl, hint) => h('div.form-row', {}, h('label', {}, label), h('div', {}, ctrl, hint ? h('small.hint', {}, hint) : null));
+
+    const formatGrid = h('div.format-grid');
+    const drawFormat = () => {
+      const f = formatById(opts.format);
+      formatGrid.replaceChildren(...FORMATS.map((x) => h('button.format-tile', {
+        class: x.id === f.id ? 'on' : '',
+        onclick: () => { opts.format = x.id; drawFormat(); },
+      }, h('strong', {}, x.label), h('small', {}, x.desc))));
+      ext.textContent = `.${f.ext}`;
+      const q = f.quality;
+      const val = q.options.some(([v]) => v === opts.quality[f.id]) ? opts.quality[f.id] : q.default;
+      opts.quality[f.id] = val;
+      qualityRow.replaceChildren(h('label', {}, q.label), h('div', {},
+        segmented(q.options, val, (v) => { opts.quality[f.id] = v; }),
+        h('small.hint', {}, q.hint)));
+    };
+    drawFormat();
+
     const body = h('div.form', {},
-      row('File name', h('div.input-suffix', {}, nameInput, h('span', {}, '.wav'))),
+      row('Format', formatGrid),
+      qualityRow,
       row('Channels', segmented([[2, 'Stereo', 'stereo'], [1, 'Mono', 'mono']], opts.channels, (v) => (opts.channels = v)), allMono ? 'All tracks are mono, so mono is pre-selected.' : 'Mono mixes left and right together.'),
-      row('Quality', segmented([[16, '16-bit'], [24, '24-bit'], [32, '32-bit float']], opts.bits, (v) => (opts.bits = v)), '16-bit is CD quality and works everywhere.'),
       row('Range', segmented([['all', 'Whole project'], ['selection', 'Selection']], opts.range, (v) => (opts.range = v))),
+      row('File name', h('div.input-suffix', {}, nameInput, ext)),
       h('p.note', {}, 'All enabled effects, volume and pan are rendered into the file. Your project stays editable.'),
     );
     modal({
-      title: 'Export audio', body,
-      actions: [{ label: 'Cancel' }, { label: 'Export', primary: true, run: () => { doExport({ ...opts, name: nameInput.value.trim() || 'Untitled' }); } }],
+      title: 'Export audio', body, width: 520,
+      actions: [{ label: 'Cancel' }, {
+        label: 'Export', primary: true,
+        run: () => {
+          setPref('exportFormat', opts.format);
+          setPref('exportQuality', opts.quality);
+          doExport({ ...opts, name: nameInput.value.trim() || 'Untitled' });
+        },
+      }],
     });
   },
 });
 
-async function doExport({ bits, channels, range, name }) {
+async function doExport({ format, quality, channels, range, name }) {
+  const f = formatById(format);
   const s = range === 'selection' && hasRange() ? sel() : { start: 0, end: projectDuration() };
   const busy = toast('Rendering…', { type: 'busy', timeout: 0 });
   try {
     const out = await renderMix({ start: s.start, end: s.end, channels });
-    const wav = encodeWav(out, sr(), bits);
+    busy.set(`Encoding ${f.label}…`);
+    const key = f.quality.key;
+    const data = await encodeAudio(f.id, out, sr(), { [key]: quality[f.id] ?? f.quality.default });
     busy.close();
-    const where = await saveBinary(wav, `${name}.wav`, [{ name: 'WAV audio', extensions: ['wav'] }]);
-    if (where) toast(`Exported ${name}.wav · ${channels === 1 ? 'mono' : 'stereo'} · ${formatTime(s.end - s.start)}`);
+    const file = `${name}.${f.ext}`;
+    const where = await saveBinary(data, file, [{ name: `${f.label} audio`, extensions: [f.ext] }]);
+    if (where) toast(`Exported ${file} · ${channels === 1 ? 'mono' : 'stereo'} · ${formatTime(s.end - s.start)}`);
   } catch (e) {
+    console.error(e);
     busy.close();
-    toast(`Export failed: ${e.message}`, { type: 'error' });
+    toast(`Export failed: ${e.message}`, { type: 'error', timeout: 6000 });
   }
 }
 

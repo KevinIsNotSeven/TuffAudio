@@ -2,7 +2,7 @@
 // The scroll wheel moves through time; Shift+wheel scrolls across tracks;
 // Ctrl/⌘+wheel zooms. Columns can be resized by dragging their right edge.
 
-import { state, on, emit, setSelection, setActive, hasRange, projectDuration, trackDuration, checkpoint, getTrack } from '../state.js';
+import { state, on, emit, setSelection, setActive, hasRange, projectDuration, trackDuration, checkpoint, getTrack, prefs, animateView } from '../state.js';
 import { peaks, PEAK_BLOCK } from '../dsp/analysis.js';
 import { previews, seek, tick } from '../audio/engine.js';
 import { run, recorder, zoomAround } from '../actions.js';
@@ -102,9 +102,31 @@ const fmtPan = (p) => (Math.abs(p) < 0.01 ? 'C' : `${Math.round(Math.abs(p) * 10
 const fmtDb = (d) => (d <= -36 ? '−∞' : `${d > 0 ? '+' : ''}${d.toFixed(1)}`);
 
 function columnFor(t) {
-  const name = h('input.track-name', { value: t.name, spellcheck: false, title: 'Rename track' });
-  name.addEventListener('change', () => { checkpoint('Rename'); t.name = name.value.trim() || t.name; emit('trackprops', t.id); emit('effects-ui', { id: t.id }); });
-  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); e.stopPropagation(); });
+  // The name is read-only until double-clicked, so a single click just selects the track.
+  const name = h('input.track-name', { value: t.name, spellcheck: false, readOnly: true, tabIndex: -1, title: 'Double-click to rename · drag to move' });
+  const finishRename = (commit) => {
+    if (name.readOnly) return;
+    const v = name.value.trim();
+    name.readOnly = true;
+    name.tabIndex = -1;
+    if (commit && v && v !== t.name) { checkpoint('Rename'); t.name = v; emit('trackprops', t.id); emit('effects-ui', { id: t.id }); }
+    else name.value = t.name;
+    window.getSelection()?.removeAllRanges();
+  };
+  name.addEventListener('dblclick', () => {
+    name.readOnly = false;
+    name.tabIndex = 0;
+    name.focus();
+    name.select();
+  });
+  name.addEventListener('blur', () => finishRename(true));
+  name.addEventListener('keydown', (e) => {
+    if (!name.readOnly) {
+      if (e.key === 'Enter') name.blur();
+      if (e.key === 'Escape') { finishRename(false); name.blur(); }
+      e.stopPropagation();
+    }
+  });
 
   const volVal = h('span.val', {}, fmtDb(t.gainDb));
   const panVal = h('span.val', {}, fmtPan(t.pan));
@@ -123,10 +145,10 @@ function columnFor(t) {
   const chan = h('button.chip.chan', { title: 'Mono / stereo', onclick: (e) => channelMenu(t, e.currentTarget) });
   const fx = h('button.chip.fx', { title: 'Effects on this track', onclick: () => { setActive(t.id); emit('focus-inspector'); } });
 
-  const head = h('div.track-head', { onpointerdown: (e) => { if (!e.target.closest('input,button')) setActive(t.id, { additive: e.shiftKey || e.metaKey || e.ctrlKey }); } },
+  const head = h('div.track-head', {},
     h('div.color', { style: { background: t.color } }),
     h('div.th-row', {}, name,
-      h('button.icon-btn.ghost.sm', { title: 'Track options', onclick: (e) => trackMenu(t, e.currentTarget) }, iconEl('more'))),
+      h('button.more-btn', { title: 'Track options', onclick: (e) => trackMenu(t, e.currentTarget) }, iconEl('more'))),
     h('div.th-row.btns', {},
       h('button.tog.mute', { title: 'Mute (M)', onclick: () => run('muteTrack', t.id) }, 'M'),
       h('button.tog.solo', { title: 'Solo (S)', onclick: () => run('soloTrack', t.id) }, 'S'),
@@ -139,7 +161,63 @@ function columnFor(t) {
   setupLane(lane, cv, t.id);
   const col = h('div.track-col', { 'data-id': t.id, style: { width: `${t.width || COL_W}px` } }, head, lane);
   col.append(resizeHandle(col, t));
+  setupColumnDrag(head, col, t);
   return col;
+}
+
+// Controls inside a header that should never start a track drag.
+const HEAD_CONTROLS = 'button, input[type=range], input:not([readonly])';
+
+/** Click a header to select the track; drag it sideways to move the track. */
+function setupColumnDrag(head, col, t) {
+  head.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest(HEAD_CONTROLS)) return;
+    setActive(t.id, { additive: e.shiftKey || e.metaKey || e.ctrlKey });
+    const x0 = e.clientX;
+    const from = state.tracks.indexOf(t);
+    let dragging = false, to = from, scrollTimer = null;
+    const others = () => $$('.track-col:not(.recording)', colsEl).filter((c) => c !== col);
+    const clearMarks = () => others().forEach((c) => c.classList.remove('drop-before', 'drop-after'));
+    const move = (ev) => {
+      const dx = ev.clientX - x0;
+      if (!dragging) {
+        if (Math.abs(dx) < 6) return;
+        dragging = true;
+        head.setPointerCapture(e.pointerId);
+        col.classList.add('dragging');
+        document.body.classList.add('dragging-track');
+      }
+      col.style.transform = `translateX(${dx + (scroller.scrollLeft - left0)}px)`;
+      const cols = others();
+      to = cols.filter((c) => { const r = c.getBoundingClientRect(); return r.left + r.width / 2 < ev.clientX; }).length;
+      clearMarks();
+      if (cols.length) {
+        if (to < cols.length) cols[to].classList.add('drop-before');
+        else cols.at(-1).classList.add('drop-after');
+      }
+      // Scroll the track strip when dragging near its edges.
+      clearInterval(scrollTimer);
+      const r = scroller.getBoundingClientRect();
+      const edge = ev.clientX < r.left + 40 ? -12 : ev.clientX > r.right - 40 ? 12 : 0;
+      if (edge) scrollTimer = setInterval(() => { scroller.scrollLeft += edge; }, 16);
+    };
+    const left0 = scroller.scrollLeft;
+    const up = () => {
+      head.removeEventListener('pointermove', move);
+      head.removeEventListener('pointerup', up);
+      head.removeEventListener('pointercancel', up);
+      clearInterval(scrollTimer);
+      if (!dragging) return;
+      clearMarks();
+      col.classList.remove('dragging');
+      col.style.transform = '';
+      document.body.classList.remove('dragging-track');
+      if (to !== from) run('reorderTrack', t.id, to);
+    };
+    head.addEventListener('pointermove', move);
+    head.addEventListener('pointerup', up);
+    head.addEventListener('pointercancel', up);
+  });
 }
 
 /** Drag the right edge of a column to resize it; double-click resets. */
@@ -494,7 +572,7 @@ function columnIndexAt(clientX) {
 function setupLane(lane, cv, id) {
   lane.addEventListener('pointermove', (e) => {
     if (e.buttons) return;
-    lane.style.cursor = edgeAt(e, cv, id) ? 'ns-resize' : 'text';
+    lane.style.cursor = edgeAt(e, cv, id) ? 'ns-resize' : 'vertical-text';
   });
   lane.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
@@ -556,6 +634,7 @@ function edgeAt(e, cv, id) {
 
 function autoScrollEdge(y) {
   const span = state.view.span;
+  state.view.target = null;
   if (y > span - 20) { state.view.scroll += 20 / state.view.pps; emit('view'); }
   else if (y < 20 && state.view.scroll > 0) { state.view.scroll -= 20 / state.view.pps; emit('view'); }
 }
@@ -576,8 +655,9 @@ function setupWheel() {
       // Trackpad sideways swipe: native horizontal scroll across columns.
     } else {
       e.preventDefault();
-      state.view.scroll += (e.deltaY * px) / state.view.pps;
-      emit('view');
+      const base = state.view.target && !state.view.target.anchor ? state.view.target.scroll : state.view.scroll;
+      const max = Math.max(0, contentDuration() - state.view.span / state.view.pps);
+      animateView({ scroll: Math.max(0, Math.min(max, base + (e.deltaY * px) / state.view.pps)) });
     }
   }, { passive: false });
 }
@@ -597,6 +677,7 @@ function updateScrollbar() {
 function setupScrollbar() {
   vthumb.addEventListener('pointerdown', (e) => {
     vthumb.setPointerCapture(e.pointerId);
+    state.view.target = null;
     const y0 = e.clientY, s0 = state.view.scroll;
     const move = (ev) => {
       const total = contentDuration(), visible = state.view.span / state.view.pps;
@@ -617,16 +698,39 @@ function onTransport() {
   if (state.recording !== hasRecCol) renderColumns();
 }
 
+/** Eases the view toward state.view.target (set by animateView) when smooth animations are on. */
+let lastStep = 0;
+function stepViewAnimation(now) {
+  const v = state.view;
+  const tg = v.target;
+  if (!tg) { lastStep = now; return; }
+  const dt = Math.min(64, now - lastStep || 16);
+  lastStep = now;
+  const k = 1 - Math.exp(-dt / 70);
+  const maxScroll = (pps) => Math.max(0, Math.max(projectDuration() + 2, v.span / pps) - v.span / pps);
+  const endScroll = tg.anchor ? tg.anchor.time - tg.anchor.px / tg.pps : tg.scroll;
+  const goal = Math.max(0, Math.min(maxScroll(tg.pps), endScroll));
+  v.pps = Math.exp(Math.log(v.pps) + (Math.log(tg.pps) - Math.log(v.pps)) * k);
+  v.scroll = tg.anchor && Math.abs(v.pps / tg.pps - 1) > 1e-3 ? tg.anchor.time - tg.anchor.px / v.pps : v.scroll + (goal - v.scroll) * k;
+  if (Math.abs(v.pps / tg.pps - 1) < 2e-3 && Math.abs(goal - v.scroll) * v.pps < 0.5) {
+    v.pps = tg.pps;
+    v.scroll = goal;
+    v.target = null;
+  }
+  emit('view');
+}
+
 let lastRecDraw = 0;
 function frame(now) {
   const pos = state.recording ? state.recordStart + recorder.frames / state.sampleRate : tick();
   emit('frame', pos);
 
-  // Playhead + follow
+  stepViewAnimation(now);
+
+  // Playhead + follow (page-flip when it reaches the bottom), unless auto-scroll is off.
   const p = timeToPos(pos);
-  if ((state.playing || state.recording) && (p > state.view.span - 30 || p < 0)) {
-    state.view.scroll = Math.max(0, pos - (state.view.span * 0.1) / state.view.pps);
-    emit('view');
+  if (prefs.autoScroll && (state.playing || state.recording) && !state.view.target && (p > state.view.span - 30 || p < 0)) {
+    animateView({ scroll: Math.max(0, pos - (state.view.span * 0.1) / state.view.pps) });
   }
   const y = timeToPos(pos);
   playheadEl.style.transform = `translateY(${HEAD_H + y}px)`;

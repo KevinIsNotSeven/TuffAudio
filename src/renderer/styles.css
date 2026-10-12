@@ -66,20 +66,7 @@ kbd {
 body.native.os-darwin .titlebar { padding-left: 84px; }
 body.native:not(.os-darwin) .titlebar { padding-right: 150px; }
 .titlebar button, .titlebar input { -webkit-app-region: no-drag; }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: -0.01em; }
-.brand-name { font-size: 14px; }
-.brand-name b { background: var(--accent-grad); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 800; }
-.logo { display: inline-flex; align-items: center; gap: 2px; height: 20px; padding: 0 5px; border-radius: 6px; background: var(--accent-grad); box-shadow: 0 4px 16px rgba(139,123,255,.35); }
-.logo i { width: 2.5px; border-radius: 2px; background: #fff; animation: logo 1.6s ease-in-out infinite; }
-.logo i:nth-child(1) { height: 6px; animation-delay: -0.2s; }
-.logo i:nth-child(2) { height: 12px; animation-delay: -0.6s; }
-.logo i:nth-child(3) { height: 9px; animation-delay: -1s; }
-.logo i:nth-child(4) { height: 13px; animation-delay: -0.4s; }
-.logo i:nth-child(5) { height: 5px; animation-delay: -0.8s; }
-body:not(.is-playing) .logo i { animation-play-state: paused; }
-@keyframes logo { 50% { transform: scaleY(0.45); } }
-
-.file-actions { display: flex; align-items: center; gap: 2px; margin-left: 8px; }
+.file-actions { display: flex; align-items: center; gap: 2px; }
 .tb-btn {
   display: inline-flex; align-items: center; gap: 6px;
   height: 28px; padding: 0 10px; border: 0; border-radius: 7px;
@@ -536,3 +523,43 @@ body.resizing-insp *, body.resizing-col * { cursor: col-resize !important; user-
 @media (max-width: 1100px) {
   .sb-item.hint { display: none; }
 }
+
+/* ---- v0.3 additions ---------------------------------------------------------- */
+.group-sep { width: 1px; height: 20px; margin: 0 3px; background: var(--line-2); }
+
+/* Track header: name is read-only until double-clicked; the header drags to reorder. */
+.track-head { cursor: grab; }
+.track-name[readonly] { cursor: grab; user-select: none; }
+.track-name[readonly]:hover { border-color: transparent; }
+.track-name:not([readonly]) { cursor: text; border-color: var(--accent); background: rgba(0,0,0,.35); user-select: text; }
+.more-btn {
+  display: grid; place-items: center; width: 28px; height: 24px; flex: none; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--line-2); background: rgba(255,255,255,.07); color: var(--text); transition: background .15s, border-color .15s;
+}
+.more-btn .i { width: 18px; height: 18px; stroke-width: 3.2; }
+.more-btn:hover { background: rgba(139,123,255,.28); border-color: rgba(139,123,255,.6); }
+.track-col.dragging { z-index: 8; background: var(--panel-solid); box-shadow: 0 16px 50px rgba(0,0,0,.6), 0 0 0 1px rgba(139,123,255,.6); animation: none; }
+.track-col.dragging .track-head { cursor: grabbing; background: #1b2030; }
+body.dragging-track, body.dragging-track * { cursor: grabbing !important; }
+.track-col.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+.track-col.drop-after { box-shadow: inset -3px 0 0 var(--accent); }
+
+/* Effects panel header */
+.stack-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.track-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 170px; padding: 2px 8px; border-radius: 6px; background: rgba(255,255,255,.05); color: var(--text-2); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-chip .dot { width: 8px; height: 8px; flex: none; border-radius: 3px; }
+
+/* Export format picker */
+.format-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.format-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 10px; border-radius: 9px; cursor: pointer; text-align: left;
+  border: 1px solid var(--line-2); background: rgba(255,255,255,.03); transition: border-color .15s, background .15s;
+}
+.format-tile strong { font-size: 13px; }
+.format-tile small { color: var(--text-3); font-size: 11px; }
+.format-tile:hover { border-color: rgba(139,123,255,.5); }
+.format-tile.on { border-color: var(--accent); background: rgba(139,123,255,.16); box-shadow: inset 0 0 0 1px rgba(139,123,255,.4); }
+.confirm-text { margin: 0 0 4px; color: var(--text-2); line-height: 1.55; }
+
+/* Smooth animations off: no transitions or motion anywhere. */
+body.no-anim *, body.no-anim *::before, body.no-anim *::after { transition: none !important; animation: none !important; }

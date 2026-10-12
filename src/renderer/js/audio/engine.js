@@ -400,10 +400,14 @@ export async function decodeFile(file) {
 
 /** Resample channels to the project rate (used when loading projects saved at another rate). */
 export async function resample(channels, fromRate) {
-  const c = getCtx();
-  if (fromRate === c.sampleRate || !channels[0]?.length) return channels;
-  const len = Math.ceil((channels[0].length * c.sampleRate) / fromRate);
-  const off = new OfflineAudioContext(channels.length, len, c.sampleRate);
+  return resampleTo(channels, fromRate, getCtx().sampleRate);
+}
+
+/** High-quality resample between any two rates (uses an offline audio graph). */
+export async function resampleTo(channels, fromRate, toRate) {
+  if (fromRate === toRate || !channels[0]?.length) return channels;
+  const len = Math.ceil((channels[0].length * toRate) / fromRate);
+  const off = new OfflineAudioContext(channels.length, len, toRate);
   const src = new AudioBufferSourceNode(off, { buffer: toAudioBuffer(channels, fromRate) });
   src.connect(off.destination);
   src.start();

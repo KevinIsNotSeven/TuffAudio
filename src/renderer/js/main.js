@@ -33,6 +33,9 @@ function boot() {
   setupDragDrop();
   setupInspectorResize();
   setupSettings();
+  const applyMotion = () => document.body.classList.toggle('no-anim', !prefs.smooth);
+  applyMotion();
+  on('prefs', (k) => { if (k === 'smooth') applyMotion(); if (k === 'autoScroll') refreshUi(); });
 
   for (const evt of ['selection', 'tracks', 'history', 'active', 'transport', 'effects-ui', 'effects', 'audio']) on(evt, refreshUi);
   on('project', () => { $('#projectName').textContent = state.projectName; document.title = `${state.projectName} — TuffAudio`; });
@@ -56,6 +59,8 @@ function refreshUi() {
   $('#recBtn').classList.toggle('arming', !!recorder.busy && !state.recording);
   $('#recBtn').disabled = false;
   $('#loopBtn').classList.toggle('on', state.loop);
+  $('#followBtn').classList.toggle('on', prefs.autoScroll);
+  $('#followBtn').title = `Auto-scroll is ${prefs.autoScroll ? 'on' : 'off'} — the view ${prefs.autoScroll ? 'follows' : "doesn't follow"} the playhead (F)`;
   for (const id of ['undo', 'redo']) {
     const b = $(`[data-action="${id}"]`);
     b.title = `${actions[id].dynamicLabel()} (${id === 'undo' ? 'Ctrl+Z' : 'Ctrl+Shift+Z'})`;
@@ -188,6 +193,8 @@ function setupSettings() {
     };
     popover(btn, h('div.settings-panel', {},
       h('div.menu-heading', {}, 'Settings'),
+      row('Smooth animations', 'Eased scrolling, zooming and transitions', 'smooth'),
+      row('Auto-scroll while playing', 'The view follows the playhead', 'autoScroll'),
       row('Quick presets', 'One-click effect stacks like “Voice Clean-up”', 'showPresets'),
       h('div.menu-sep'),
       h('button.menu-item', { onclick: () => { closeMenu(); setPref('inspectorWidth', applyInspectorWidth(INSP_DEFAULT)); for (const t of state.tracks) t.width = null; emit('tracks'); } }, iconEl('refresh'), h('span.menu-label', {}, 'Reset panel and column sizes')),

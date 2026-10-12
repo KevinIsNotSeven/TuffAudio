@@ -1,10 +1,9 @@
-// Right-hand inspector: track info, mono/stereo controls, and the
-// non-destructive effect ("modifier") stack for the active track.
+// Right-hand inspector: the non-destructive effect ("modifier") stack for the active track.
 
-import { state, on, emit, activeTrack, checkpoint, trackDuration, hasRange, prefs } from '../state.js';
+import { state, on, emit, activeTrack, checkpoint, hasRange, prefs } from '../state.js';
 import { EFFECTS, CATEGORIES, PRESETS, createEffect, defaultParams } from '../audio/effects.js';
 import { run, addEffect, addPreset, applyEffect } from '../actions.js';
-import { $, h, iconEl, popover, closeMenu, segmented, formatTime } from './dom.js';
+import { $, h, iconEl, popover, closeMenu, segmented } from './dom.js';
 
 let root;
 
@@ -31,35 +30,9 @@ function render(focusId) {
     return;
   }
 
-  const stereo = t.channels.length > 1;
-  const chanSeg = segmented([[1, 'Mono', 'mono'], [2, 'Stereo', 'stereo']], stereo ? 2 : 1, (v) => {
-    if (v === 2) run('toStereo');
-    else {
-      chanSeg.set(2);
-      popover(chanSeg, [
-        { heading: 'How should it become mono?' },
-        { label: 'Mix both sides together', sub: 'Best for most audio', icon: 'layers', run: () => run('toMono', 'mix') },
-        { label: 'Keep left only', icon: 'mono', run: () => run('toMono', 'left') },
-        { label: 'Keep right only', icon: 'mono', run: () => run('toMono', 'right') },
-      ]);
-    }
-  }, 'wide');
-
-  const trackCard = h('section.insp-card.track-card', {},
-    h('div.tc-head', {},
-      h('span.dot', { style: { background: t.color } }),
-      h('div.tc-title', {}, h('strong', {}, t.name), h('small', {}, `${stereo ? 'Stereo' : 'Mono'} · ${(state.sampleRate / 1000).toFixed(1)} kHz · ${formatTime(trackDuration(t))}`))),
-    h('div.field-label', {}, 'Channels'),
-    chanSeg,
-    h('div.tc-actions', {},
-      h('button.btn.sm', { disabled: !stereo, onclick: () => run('swap'), title: 'Swap left and right' }, iconEl('swap'), 'Swap L/R'),
-      h('button.btn.sm', { disabled: !stereo, onclick: () => run('splitStereo'), title: 'Split into two mono tracks' }, iconEl('split'), 'Split'),
-      h('button.btn.sm', { onclick: () => run('autoTrim'), title: 'Remove silence at the start and end' }, iconEl('wand'), 'Auto-trim')),
-  );
-
   const enabledCount = t.effects.filter((e) => e.enabled).length;
   const stackHead = h('div.stack-head', {},
-    h('div', {}, h('h3', {}, 'Effects'), h('small', {}, t.effects.length ? `${enabledCount} of ${t.effects.length} active · top to bottom` : 'Non-destructive until applied')),
+    h('div.stack-title', {}, h('h3', {}, 'Effects'), h('span.track-chip', { title: 'Effects for this track' }, h('span.dot', { style: { background: t.color } }), t.name)),
     h('div.stack-tools', {},
       h('button.icon-btn.ghost.preview-toggle', { title: 'Show effect result in the waveform (V)', onclick: () => run('toggleProcessed') }),
       h('button.btn.sm', { disabled: !enabledCount, title: 'Bake all active effects into the audio', onclick: () => run('applyAll') }, iconEl('check'), 'Apply all')));
@@ -75,7 +48,7 @@ function render(focusId) {
     h('div.field-label', {}, 'Quick presets'),
     h('div.preset-chips', {}, ...PRESETS.map((p) => h('button.chip.preset', { title: p.description, onclick: () => addPreset(p) }, iconEl('sparkles'), p.name))));
 
-  root.replaceChildren(trackCard, h('section.insp-card.stack', {}, stackHead, list, addBtn, presets));
+  root.replaceChildren(h('section.insp-card.stack', {}, stackHead, list, addBtn, presets));
   updatePreviewToggle();
   root.scrollTop = scroll;
   if (focusId) list.querySelector(`[data-id="${focusId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });

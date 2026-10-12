@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: data:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: data:">
   <title>TuffAudio</title>
   <link rel="stylesheet" href="styles.css">
   <script type="module" src="js/main.js"></script>
@@ -11,10 +11,6 @@
 <body>
   <div id="app">
     <header class="titlebar">
-      <div class="brand">
-        <span class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-        <span class="brand-name">Tuff<b>Audio</b></span>
-      </div>
       <nav class="file-actions">
         <button class="tb-btn" data-action="new" title="New project">New</button>
         <button class="tb-btn" data-action="open" title="Open project (Ctrl+O)">Open</button>
@@ -68,6 +64,8 @@
       </div>
 
       <div class="group zoom">
+        <button class="icon-btn" data-action="autoScroll" id="followBtn" data-icon="follow" title="Auto-scroll: follow the playhead (F)"></button>
+        <span class="group-sep"></span>
         <button class="icon-btn" data-action="zoomOut" data-icon="zoomOut" title="Zoom out (-)"></button>
         <button class="icon-btn" data-action="zoomFit" data-icon="fit" title="Zoom to fit (Ctrl+0)"></button>
         <button class="icon-btn" data-action="zoomIn" data-icon="zoomIn" title="Zoom in (=)"></button>
