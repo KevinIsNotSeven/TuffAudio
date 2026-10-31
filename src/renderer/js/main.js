@@ -1,5 +1,6 @@
-// TuffAudio renderer entry: wires toolbar, shortcuts, recording source picker,
-// status bar, drag-and-drop and the command palette.
+// TuffAudio renderer entry: wires the title-bar menus, toolbar, shortcuts (customisable),
+// themes, update check, recording source picker, status bar, drag-and-drop and the
+// command palette.
 
 import { state, on, emit, hasRange, projectDuration, prefs, setPref } from './state.js';
 import { actions, run, importFiles, recorder } from './actions.js';
@@ -9,6 +10,7 @@ import { initTimeline } from './ui/timeline.js';
 import { initInspector } from './ui/inspector.js';
 import { $, $$, h, iconEl, popover, closeMenu, modal, segmented, formatTime, toast } from './ui/dom.js';
 import { icon } from './ui/icons.js';
+import { VERSION, RELEASES_API, DOWNLOAD_URL } from './version.js';
 
 const isMac = /Mac/.test(navigator.platform) || window.tuffNative?.platform === 'darwin';
 
@@ -26,6 +28,11 @@ function boot() {
     run(b.dataset.action);
   });
 
+  applyTheme(prefs.theme);
+  $('#appVersion').textContent = `ver. ${VERSION.replace(/\.0$/, '')}`;
+  state.recordSource = prefs.recordSource || 'in:default';
+  state.recordChannels = prefs.recordChannels || 2;
+
   initTimeline();
   initInspector();
   setupSourcePicker();
@@ -33,15 +40,16 @@ function boot() {
   setupDragDrop();
   setupInspectorResize();
   setupSettings();
+  setupFileMenu();
   const applyMotion = () => document.body.classList.toggle('no-anim', !prefs.smooth);
   applyMotion();
   on('prefs', (k) => { if (k === 'smooth') applyMotion(); if (k === 'autoScroll') refreshUi(); });
 
   for (const evt of ['selection', 'tracks', 'history', 'active', 'transport', 'effects-ui', 'effects', 'audio']) on(evt, refreshUi);
-  on('project', () => { $('#projectName').textContent = state.projectName; document.title = `${state.projectName} — TuffAudio`; });
+  on('project', () => { document.title = `${state.projectName} — TuffAudio`; });
   on('frame', onFrame);
   on('palette', openPalette);
-  on('shortcuts', showShortcuts);
+  on('shortcuts', openKeybinds);
   refreshUi();
 }
 
@@ -69,10 +77,10 @@ function refreshUi() {
   document.body.classList.toggle('is-playing', state.playing || state.recording);
 
   const { start, end } = state.selection;
-  $('#sbSel').textContent = hasRange()
-    ? `Selection ${formatTime(start)} → ${formatTime(end)}  (${formatTime(end - start)})`
-    : `Cursor ${formatTime(start)}`;
-  $('#clockSub').textContent = hasRange() ? `sel ${formatTime(end - start)}` : `of ${formatTime(projectDuration())}`;
+  // Second clock line: the selection length when there is one, otherwise the total length.
+  const sub = $('#clockSub');
+  sub.textContent = formatTime(hasRange() ? end - start : projectDuration());
+  sub.classList.toggle('sel', hasRange());
   $('#sbInfo').textContent = state.tracks.length
     ? `${state.tracks.length} track${state.tracks.length > 1 ? 's' : ''} · ${(state.sampleRate / 1000).toFixed(1)} kHz · 32-bit float`
     : '';
@@ -91,7 +99,7 @@ function onFrame(pos) {
     const m = meterState[i];
     m.peak = Math.max(pct, m.peak - 0.02);
     m.hold = pct >= m.hold ? pct : Math.max(0, m.hold - 0.004);
-    bars[i].querySelector('i').style.transform = `scaleX(${m.peak})`;
+    bars[i].querySelector('i').style.clipPath = `inset(0 ${(1 - m.peak) * 100}% 0 0)`;
     bars[i].querySelector('b').style.left = `${m.hold * 100}%`;
     bars[i].classList.toggle('clip', l >= 0.999);
   });
@@ -137,7 +145,14 @@ function setupSourcePicker() {
       for (const s of items) {
         panel.append(h('button.menu-item', {
           class: s.id === state.recordSource ? 'checked' : '',
-          onclick: () => { state.recordSource = s.id; if (kind !== 'input') state.recordChannels = 2; updateSourceButton(); closeMenu(); },
+          onclick: () => {
+            state.recordSource = s.id;
+            if (kind !== 'input') state.recordChannels = 2;
+            setPref('recordSource', s.id);
+            setPref('recordChannels', state.recordChannels);
+            updateSourceButton();
+            closeMenu();
+          },
         }, iconEl(KIND_ICON[s.kind]), h('span.menu-label', {}, s.label), s.id === state.recordSource ? iconEl('check') : null));
       }
     }
@@ -145,7 +160,7 @@ function setupSourcePicker() {
       panel.append(h('p.source-note', {}, 'Linux tip: if “System audio” is silent, choose a “Monitor of …” input — that is your desktop output.'));
     }
     panel.append(h('div.menu-sep'), h('div.source-ch', {}, h('span', {}, 'Record as'),
-      segmented([[1, 'Mono', 'mono'], [2, 'Stereo', 'stereo']], state.recordChannels, (v) => { state.recordChannels = v; updateSourceButton(); }, 'sm')));
+      segmented([[1, 'Mono', 'mono'], [2, 'Stereo', 'stereo']], state.recordChannels, (v) => { state.recordChannels = v; setPref('recordChannels', v); updateSourceButton(); }, 'sm')));
     popover(btn, panel);
   });
 }
@@ -182,7 +197,37 @@ function setupInspectorResize() {
   split.addEventListener('dblclick', () => setPref('inspectorWidth', applyInspectorWidth(INSP_DEFAULT)));
 }
 
-// ---- Settings ------------------------------------------------------------------------------
+// ---- Title-bar menus -------------------------------------------------------------------------
+
+const menuItem = (id, label, iconName) => {
+  const a = actions[id];
+  return { label, icon: iconName, hint: prettyKeys(effectiveKeys(a)), disabled: !a.enabled(), run: () => run(id) };
+};
+
+function setupFileMenu() {
+  const btn = $('#fileMenuBtn');
+  btn.addEventListener('click', () => popover(btn, [
+    menuItem('new', 'New', 'file'),
+    menuItem('open', 'Open…', 'folder'),
+    { separator: true },
+    menuItem('save', 'Save', 'save'),
+    menuItem('saveAs', 'Save as…', 'save'),
+  ]));
+}
+
+export const THEMES = [
+  { id: 'tuff', name: 'Tuff', colors: ['#2b2bff', '#e86bff'] },
+  { id: 'midnight', name: 'Midnight', colors: ['#3f7bff', '#2fd4c6'] },
+  { id: 'oled', name: 'OLED Black', colors: ['#000000', '#9a8cff'] },
+  { id: 'sunset', name: 'Sunset', colors: ['#ff6a3d', '#ffc14d'] },
+  { id: 'forest', name: 'Forest', colors: ['#1f9d6b', '#a6e35b'] },
+];
+
+function applyTheme(id) {
+  const theme = THEMES.find((t) => t.id === id) ? id : 'tuff';
+  document.documentElement.dataset.theme = theme;
+  emit('theme', theme);
+}
 
 function setupSettings() {
   const btn = $('#settingsBtn');
@@ -191,15 +236,51 @@ function setupSettings() {
       const sw = h('button.switch', { class: prefs[key] ? 'on' : '', onclick: () => { setPref(key, !prefs[key]); sw.classList.toggle('on', prefs[key]); } }, h('span'));
       return h('label.setting-row', {}, h('span.menu-label', {}, label, h('small', {}, sub)), sw);
     };
+    const below = () => { const r = btn.getBoundingClientRect(); return { x: r.left, y: r.bottom }; };
     popover(btn, h('div.settings-panel', {},
-      h('div.menu-heading', {}, 'Settings'),
       row('Smooth animations', 'Eased scrolling, zooming and transitions', 'smooth'),
-      row('Auto-scroll while playing', 'The view follows the playhead', 'autoScroll'),
-      row('Quick presets', 'One-click effect stacks like “Voice Clean-up”', 'showPresets'),
+      h('button.menu-item', { onclick: () => { closeMenu(); openKeybinds(); } }, iconEl('keyboard'), h('span.menu-label', {}, 'Keybinds…')),
+      h('button.menu-item', { onclick: () => openThemes(below()) }, iconEl('sparkles'), h('span.menu-label', {}, 'Themes'), h('span.menu-arrow', {}, '›')),
+      h('button.menu-item', { onclick: () => { closeMenu(); checkForUpdates(); } }, iconEl('refresh'), h('span.menu-label', {}, 'Check for updates…')),
       h('div.menu-sep'),
-      h('button.menu-item', { onclick: () => { closeMenu(); setPref('inspectorWidth', applyInspectorWidth(INSP_DEFAULT)); for (const t of state.tracks) t.width = null; emit('tracks'); } }, iconEl('refresh'), h('span.menu-label', {}, 'Reset panel and column sizes')),
-    ), { align: 'end' });
+      row('Quick presets', 'One-click effect stacks like “Voice Clean-up”', 'showPresets'),
+    ));
   });
+}
+
+function openThemes(at) {
+  popover(at, h('div.theme-panel', {},
+    h('div.menu-heading', {}, 'Theme'),
+    ...THEMES.map((t) => h('button.menu-item.theme-item', {
+      class: (prefs.theme || 'tuff') === t.id ? 'checked' : '',
+      onclick: () => { setPref('theme', t.id); applyTheme(t.id); closeMenu(); toast(`Theme: ${t.name}`); },
+    }, h('span.theme-swatch', { style: { background: `linear-gradient(135deg, ${t.colors[0]}, ${t.colors[1]})` } }), h('span.menu-label', {}, t.name),
+    (prefs.theme || 'tuff') === t.id ? iconEl('check') : null))));
+}
+
+const newer = (a, b) => {
+  const pa = a.replace(/^v/, '').split('.').map(Number), pb = b.replace(/^v/, '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+};
+
+async function checkForUpdates() {
+  const busy = toast('Checking for updates…', { type: 'busy', timeout: 0 });
+  try {
+    const res = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } });
+    if (!res.ok) throw new Error(`GitHub said ${res.status}`);
+    const latest = (await res.json()).tag_name || '';
+    busy.close();
+    if (!newer(latest, VERSION)) { toast(`You're up to date (version ${VERSION})`); return; }
+    modal({
+      title: 'Update available', width: 420,
+      body: h('p.confirm-text', {}, `TuffAudio ${latest.replace(/^v/, '')} is out — you have ${VERSION}. Download the new TuffAudio.exe and use it in place of this one.`),
+      actions: [{ label: 'Later' }, { label: 'Download', primary: true, run: () => { window.open(DOWNLOAD_URL, '_blank'); } }],
+    });
+  } catch (e) {
+    busy.close();
+    toast(`Couldn't check for updates: ${e.message}`, { type: 'error', timeout: 5000 });
+  }
 }
 
 // ---- Keyboard ---------------------------------------------------------------------------
@@ -218,12 +299,20 @@ function comboOf(e) {
   return parts.join('+');
 }
 
+/** The shortcut for an action: the user's own binding if they set one ('' = none), else the default. */
+const effectiveKeys = (a) => (prefs.keybinds && a.id in prefs.keybinds ? prefs.keybinds[a.id] : a.keys) || '';
+const bindable = () => Object.values(actions).filter((a) => a.label && !a.hidden?.() && a.group && !a.id.startsWith('fx:') && !a.id.startsWith('preset:'));
+
+let keymap = new Map();
+function buildKeymap() {
+  keymap = new Map([['Backspace', 'delete'], ['Mod+Y', 'redo']]);
+  for (const a of Object.values(actions)) { const k = effectiveKeys(a); if (k) keymap.set(k, a.id); }
+}
+
 function setupKeyboard() {
-  const map = new Map();
-  for (const a of Object.values(actions)) if (a.keys) map.set(a.keys, a.id);
-  map.set('Backspace', 'delete');
-  map.set('Mod+Y', 'redo');
-  map.set('Mod+Shift+E', 'export');
+  buildKeymap();
+  on('prefs', (k) => { if (k === 'keybinds') { buildKeymap(); refreshUi(); } });
+  const map = { get: (k) => keymap.get(k) };
 
   document.addEventListener('keydown', (e) => {
     const typing = e.target.closest?.('input, textarea, select, [contenteditable]') && e.target.type !== 'range';
@@ -263,7 +352,7 @@ function setupDragDrop() {
 
 // ---- Command palette ---------------------------------------------------------------------
 
-const prettyKeys = (k) => k?.replace('Mod', isMac ? '⌘' : 'Ctrl').replace(/\+/g, ' ');
+const prettyKeys = (k) => (k ? k.replace('Mod', isMac ? '⌘' : 'Ctrl').replace(/\+/g, ' ') : '');
 
 function openPalette() {
   if ($('.palette')) return;
@@ -285,7 +374,7 @@ function openPalette() {
       class: [i === sel ? 'sel' : '', a.enabled() ? '' : 'disabled'].join(' '),
       onclick: () => exec(a),
       onpointermove: () => { if (sel !== i) { sel = i; draw(); } },
-    }, iconEl(a.icon || 'command'), h('span.pl-label', {}, a.dynamicLabel?.() || a.label, a.description ? h('small', {}, a.description) : null), h('span.pl-group', {}, a.group), a.keys ? h('kbd', {}, prettyKeys(a.keys)) : null)));
+    }, iconEl(a.icon || 'command'), h('span.pl-label', {}, a.dynamicLabel?.() || a.label, a.description ? h('small', {}, a.description) : null), h('span.pl-group', {}, a.group), effectiveKeys(a) ? h('kbd', {}, prettyKeys(effectiveKeys(a))) : null)));
     if (!items.length) list.append(h('div.palette-empty', {}, 'No matching commands'));
     list.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
   };
@@ -306,19 +395,64 @@ function openPalette() {
   requestAnimationFrame(() => { back.classList.add('show'); input.focus(); });
 }
 
-function showShortcuts() {
+/** Keybinds editor: click a shortcut, press the new keys. Saved between sessions. */
+function openKeybinds() {
   const groups = {};
-  for (const a of Object.values(actions)) if (a.keys) (groups[a.group] ||= []).push(a);
-  const body = h('div.shortcuts', {}, ...Object.entries(groups).map(([g, list]) => h('div.sc-group', {},
-    h('h4', {}, g), ...list.map((a) => h('div.sc-row', {}, h('span', {}, a.label), h('kbd', {}, prettyKeys(a.keys)))))),
-  h('div.sc-group', {}, h('h4', {}, 'Mouse'),
-    h('div.sc-row', {}, h('span', {}, 'Select region'), h('kbd', {}, 'Drag')),
-    h('div.sc-row', {}, h('span', {}, 'Select whole track'), h('kbd', {}, 'Double-click')),
-    h('div.sc-row', {}, h('span', {}, 'Extend selection'), h('kbd', {}, 'Shift Click')),
-    h('div.sc-row', {}, h('span', {}, 'Zoom'), h('kbd', {}, `${isMac ? '⌘' : 'Ctrl'} Scroll`)),
-    h('div.sc-row', {}, h('span', {}, 'Pan'), h('kbd', {}, 'Shift Scroll')),
-    h('div.sc-row', {}, h('span', {}, 'Reset a slider'), h('kbd', {}, 'Double-click'))));
-  modal({ title: 'Keyboard shortcuts', body, width: 620, actions: [{ label: 'Done', primary: true }] });
+  for (const a of bindable()) (groups[a.group] ||= []).push(a);
+  let capturing = null;
+  const save = (binds) => setPref('keybinds', binds);
+  const rowFor = (a) => {
+    const key = h('button.kb-key', { title: 'Click, then press the new shortcut' });
+    const clear = h('button.icon-btn.ghost.sm', { title: 'Remove shortcut' }, iconEl('x'));
+    const paint = () => {
+      const k = effectiveKeys(a);
+      key.replaceChildren(k ? prettyKeys(k) : '—');
+      key.classList.toggle('none', !k);
+      key.classList.toggle('custom', !!(prefs.keybinds && a.id in prefs.keybinds));
+      clear.disabled = !k;
+    };
+    key.addEventListener('click', () => {
+      if (capturing) capturing.cancel();
+      key.textContent = 'Press keys…';
+      key.classList.add('capturing');
+      const onKey = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+        stop();
+        if (e.key === 'Escape') { paint(); return; }
+        const combo = comboOf(e);
+        const binds = { ...(prefs.keybinds || {}) };
+        // A shortcut can only do one thing: take it away from whatever had it.
+        for (const other of Object.values(actions)) {
+          if (other !== a && effectiveKeys(other) === combo) { binds[other.id] = ''; toast(`${prettyKeys(combo)} moved from “${other.label}”`); }
+        }
+        binds[a.id] = combo;
+        save(binds);
+        redraw();
+      };
+      const stop = () => { document.removeEventListener('keydown', onKey, true); key.classList.remove('capturing'); capturing = null; };
+      document.addEventListener('keydown', onKey, true);
+      capturing = { cancel: () => { stop(); paint(); } };
+    });
+    clear.addEventListener('click', () => { save({ ...(prefs.keybinds || {}), [a.id]: '' }); redraw(); });
+    paint();
+    return h('div.kb-row', {}, h('span', {}, a.label), key, clear);
+  };
+  const body = h('div.keybinds');
+  const redraw = () => body.replaceChildren(
+    h('p.kb-hint', {}, 'Click a shortcut and press the keys you want. Esc cancels.'),
+    ...Object.entries(groups).map(([g, list]) => h('div.kb-group', {}, h('h4', {}, g), ...list.map(rowFor))),
+    h('div.kb-group', {}, h('h4', {}, 'Mouse'),
+      ...[['Select a region', 'Drag down a waveform'], ['Select a whole track', 'Double-click'], ['Add an effect', 'Right-click a waveform'],
+        ['Track options', 'Right-click a track header'], ['Zoom', `${isMac ? '⌘' : 'Ctrl'} + Scroll`], ['Across tracks', 'Shift + Scroll'], ['Reset a slider', 'Double-click']]
+        .map(([l, k]) => h('div.kb-row', {}, h('span', {}, l), h('span.kb-mouse', {}, k)))));
+  redraw();
+  modal({
+    title: 'Keybinds', body, width: 560,
+    onClose: () => capturing?.cancel(),
+    actions: [{ label: 'Reset all', run: () => { save({}); redraw(); return false; } }, { label: 'Done', primary: true }],
+  });
 }
 
 boot();

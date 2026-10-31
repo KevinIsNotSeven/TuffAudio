@@ -34,7 +34,10 @@ export const state = {
 // ---- Preferences (remembered between sessions) -------------------------------
 
 const PREFS_KEY = 'tuffaudio.prefs';
-const DEFAULT_PREFS = { showPresets: false, inspectorWidth: 360, autoScroll: true, smooth: true, exportFormat: 'mp3', exportQuality: {} };
+const DEFAULT_PREFS = {
+  showPresets: false, inspectorWidth: 360, autoScroll: true, smooth: true, exportFormat: 'mp3', exportQuality: {},
+  theme: 'tuff', keybinds: {}, recordSource: 'in:default', recordChannels: 2,
+};
 function loadPrefs() {
   try { return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch { return { ...DEFAULT_PREFS }; }
 }
@@ -68,7 +71,7 @@ export function animateView({ scroll, pps, anchor } = {}) {
 }
 
 let trackSeq = 0;
-export function createTrack({ name, channels, effects = [], gainDb = 0, pan = 0, mute = false, solo = false, color, width = null }) {
+export function createTrack({ name, channels, effects = [], gainDb = 0, pan = 0, mute = false, solo = false, color, width = null, x = null }) {
   const n = trackSeq++;
   return {
     id: `t${Date.now().toString(36)}${n}`,
@@ -76,6 +79,7 @@ export function createTrack({ name, channels, effects = [], gainDb = 0, pan = 0,
     color: color || COLORS[n % COLORS.length],
     channels, effects, gainDb, pan, mute, solo,
     width, // column width in px (null = default)
+    x, // horizontal position in the track area (null = place after the others)
   };
 }
 

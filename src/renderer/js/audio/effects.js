@@ -59,24 +59,57 @@ function scheduleEnvelope(ctx, param, fn, segStart, segEnd, timing) {
   param.setValueCurveAtTime(curve, at + (a - from), segEnd - a);
 }
 
+/**
+ * Every effect has a time range, stored as params.start / params.end (seconds;
+ * end = null means "until the end of the track"). Returns a clamped [start, end].
+ */
+export function effectRange(p, duration) {
+  const s = Math.max(0, Math.min(duration, p.start ?? 0));
+  const e = p.end == null ? duration : Math.max(s, Math.min(duration, p.end));
+  return [s, e];
+}
+export const isFullRange = (p, duration) => (p.start ?? 0) <= 1e-6 && (p.end == null || p.end >= duration - 1e-6);
+
+/**
+ * Schedules a step function on an AudioParam: `vin` while track time is inside [s, e), else `vout`,
+ * with short ramps at the edges so switching an effect in or out never clicks.
+ */
+export function scheduleGate(ctx, param, s, e, timing, vin, vout) {
+  const R = 0.008;
+  const now = ctx.currentTime;
+  const at = Math.max(now, timing.when);
+  const from = timing.offset + Math.max(0, now - timing.when);
+  const val = (x) => (x >= s && x < e ? vin : vout);
+  param.cancelScheduledValues(0);
+  param.setValueAtTime(val(from), at);
+  for (const x of [s, e]) {
+    if (x <= from || e - s <= 0) continue;
+    const t = at + (x - from);
+    param.setValueAtTime(val(x - 1e-6), t);
+    param.linearRampToValueAtTime(val(x), t + R);
+  }
+}
+
 function fadeEffect(dir) {
   return {
     name: dir === 'in' ? 'Fade In' : 'Fade Out',
     category: 'Volume',
     icon: dir === 'in' ? 'fadeIn' : 'fadeOut',
     kind: 'node',
-    description: dir === 'in' ? 'Ramp the volume up from silence at the start.' : 'Ramp the volume down to silence at the end.',
+    description: dir === 'in' ? 'Ramp the volume up from silence across its time range.' : 'Ramp the volume down to silence across its time range.',
+    // A fade *is* its range: it ramps from the start time to the end time.
+    selfRanged: true,
+    defaultRange: (dur) => (dir === 'in' ? [0, Math.min(2, dur)] : [Math.max(0, dur - 2), null]),
     params: [
-      { key: 'length', label: 'Length', min: 0.05, max: 20, step: 0.01, default: 2, format: sec },
       { key: 'shape', label: 'Curve', type: 'select', default: 'smooth', options: [['smooth', 'Smooth'], ['linear', 'Linear'], ['exp', 'Exponential']] },
     ],
     build(ctx, p, timing) {
       const g = ctx.createGain();
       const apply = (p) => {
-        const dur = timing.duration;
-        const len = Math.min(p.length, dur);
-        if (dir === 'in') scheduleEnvelope(ctx, g.gain, (x) => (x < len ? fadeShape(x / len, p.shape) : 1), 0, len, timing);
-        else scheduleEnvelope(ctx, g.gain, (x) => (x <= dur - len ? 1 : fadeShape((dur - x) / len, p.shape)), dur - len, dur, timing);
+        const [s, e] = effectRange(p, timing.duration);
+        const len = Math.max(1e-4, e - s);
+        if (dir === 'in') scheduleEnvelope(ctx, g.gain, (x) => (x < s ? 0 : x < e ? fadeShape((x - s) / len, p.shape) : 1), s, e, timing);
+        else scheduleEnvelope(ctx, g.gain, (x) => (x < s ? 1 : x < e ? fadeShape((e - x) / len, p.shape) : 0), s, e, timing);
       };
       apply(p);
       return { input: g, output: g, update: apply, timed: true };
@@ -444,7 +477,18 @@ export const EFFECTS = {
 export const CATEGORIES = ['Volume', 'Dynamics', 'Tone', 'Space', 'Character', 'Stereo', 'Time'];
 
 export function defaultParams(type) {
-  return Object.fromEntries(EFFECTS[type].params.map((p) => [p.key, p.default]));
+  return { start: 0, end: null, ...Object.fromEntries(EFFECTS[type].params.map((p) => [p.key, p.default])) };
+}
+
+/** Upgrade effect params saved by older versions (fades used a `length` instead of a time range). */
+export function migrateParams(type, params, duration) {
+  const p = { ...defaultParams(type), ...params };
+  if ((type === 'fadeIn' || type === 'fadeOut') && params.length != null && params.start == null) {
+    if (type === 'fadeIn') { p.start = 0; p.end = Math.min(duration, params.length); }
+    else { p.start = Math.max(0, duration - params.length); p.end = null; }
+  }
+  delete p.length;
+  return p;
 }
 
 let uid = 0;

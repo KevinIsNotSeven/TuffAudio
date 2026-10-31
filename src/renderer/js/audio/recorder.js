@@ -37,9 +37,16 @@ export async function listSources({ askPermission = false } = {}) {
 }
 
 async function inputStream(deviceId, channels) {
-  return navigator.mediaDevices.getUserMedia({
-    audio: { ...RAW, deviceId: deviceId === 'default' ? undefined : { exact: deviceId }, channelCount: { ideal: channels } },
+  const open = (id) => navigator.mediaDevices.getUserMedia({
+    audio: { ...RAW, deviceId: id === 'default' ? undefined : { exact: id }, channelCount: { ideal: channels } },
   });
+  try {
+    return await open(deviceId);
+  } catch (err) {
+    // The remembered device may have been unplugged: fall back to the default input.
+    if (deviceId !== 'default' && ['OverconstrainedError', 'NotFoundError'].includes(err.name)) return open('default');
+    throw err;
+  }
 }
 
 async function desktopStream() {

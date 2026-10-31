@@ -4,7 +4,7 @@
 import {
   state, emit, checkpoint, undo as undoState, redo as undoRedo, createTrack, addTrack, setSelection, setActive,
   targetTracks, hasRange, projectDuration, activeTrack, getTrack, effectsChanged, clearHistory, canUndo, canRedo, undoLabel, redoLabel,
-  prefs, setPref, animateView,
+  prefs, setPref, animateView, trackDuration,
 } from './state.js';
 import * as E from './dsp/edit.js';
 import { detectSilenceBounds } from './dsp/analysis.js';
@@ -12,7 +12,7 @@ import { FORMATS, formatById, encodeAudio } from './audio/exporters.js';
 import { serializeProject, deserializeProject } from './dsp/projectfile.js';
 import { play, stop, seek, getCtx, decodeFile, renderMix, bakeEffects, enabledEffects, resample } from './audio/engine.js';
 import { Recorder } from './audio/recorder.js';
-import { EFFECTS, createEffect, PRESETS } from './audio/effects.js';
+import { EFFECTS, createEffect, PRESETS, migrateParams } from './audio/effects.js';
 import { toast, modal, h, segmented, formatTime } from './ui/dom.js';
 
 const sr = () => state.sampleRate;
@@ -210,19 +210,13 @@ def('duplicate', {
 });
 def('fadeIn', {
   label: 'Fade in', icon: 'fadeIn', group: 'Edit', enabled: () => targetTracks().length > 0,
-  description: 'Fades the selection, or adds a Fade In effect if nothing is selected',
-  run() {
-    if (hasRange()) return editTracks('Fade in', (t) => E.fade(t.channels, fr(sel().start), fr(sel().end), 'in'));
-    addEffect('fadeIn');
-  },
+  description: 'Adds a Fade In effect over the selection (or the first 2 seconds)',
+  run() { addEffect('fadeIn'); },
 });
 def('fadeOut', {
   label: 'Fade out', icon: 'fadeOut', group: 'Edit', enabled: () => targetTracks().length > 0,
-  description: 'Fades the selection, or adds a Fade Out effect if nothing is selected',
-  run() {
-    if (hasRange()) return editTracks('Fade out', (t) => E.fade(t.channels, fr(sel().start), fr(sel().end), 'out'));
-    addEffect('fadeOut');
-  },
+  description: 'Adds a Fade Out effect over the selection (or the last 2 seconds)',
+  run() { addEffect('fadeOut'); },
 });
 def('autoTrim', {
   label: 'Auto-trim silence', icon: 'wand', keys: 'Mod+Shift+T', group: 'Edit', enabled: () => targetTracks().length > 0,
@@ -267,7 +261,7 @@ def('splitStereo', {
     const t = activeTrack();
     checkpoint('Split stereo');
     const i = state.tracks.indexOf(t);
-    const l = createTrack({ name: `${t.name} L`, channels: [t.channels[0]], effects: structuredClone(t.effects), pan: -1, gainDb: t.gainDb });
+    const l = createTrack({ name: `${t.name} L`, channels: [t.channels[0]], effects: structuredClone(t.effects), pan: -1, gainDb: t.gainDb, x: t.x, width: t.width });
     const r = createTrack({ name: `${t.name} R`, channels: [t.channels[1]], effects: structuredClone(t.effects), pan: 1, gainDb: t.gainDb });
     state.tracks.splice(i, 1, l, r);
     setActive(l.id);
@@ -281,7 +275,7 @@ def('joinStereo', {
     const [a, b] = targetTracks();
     checkpoint('Join to stereo');
     const n = Math.max(a.channels[0].length, b.channels[0].length);
-    const t = createTrack({ name: `${a.name} + ${b.name}`, channels: [...E.padEnd(a.channels, n), ...E.padEnd(b.channels, n)], effects: structuredClone(a.effects) });
+    const t = createTrack({ name: `${a.name} + ${b.name}`, channels: [...E.padEnd(a.channels, n), ...E.padEnd(b.channels, n)], effects: structuredClone(a.effects), x: a.x, width: a.width });
     const i = state.tracks.indexOf(a);
     state.tracks = state.tracks.filter((x) => x !== a && x !== b);
     state.tracks.splice(i, 0, t);
@@ -307,7 +301,7 @@ def('duplicateTrack', {
   run(id) {
     const t = id ? getTrack(id) : activeTrack();
     checkpoint('Duplicate track');
-    const copy = createTrack({ ...t, name: `${t.name} copy`, color: undefined, effects: t.effects.map((e) => createEffect(e.type, e.params)) });
+    const copy = createTrack({ ...t, name: `${t.name} copy`, color: undefined, x: null, effects: t.effects.map((e) => createEffect(e.type, e.params)) });
     state.tracks.splice(state.tracks.indexOf(t) + 1, 0, copy);
     setActive(copy.id);
     emit('tracks');
@@ -357,10 +351,21 @@ def('moveTrack', {
 
 // ---- Effects (modifiers) -----------------------------------------------------------------
 
-export function addEffect(type, params = {}, track = activeTrack()) {
+/**
+ * Default time range for a new effect: the selection if there is one (and `useSelection`),
+ * otherwise the whole track (fades get a 2-second ramp at the start or end).
+ */
+function defaultRange(type, track, useSelection = true) {
+  const dur = trackDuration(track);
+  if (useSelection && hasRange()) return { start: Math.min(sel().start, dur), end: sel().end >= dur - 1e-3 ? null : sel().end };
+  const r = EFFECTS[type].defaultRange?.(dur);
+  return r ? { start: r[0], end: r[1] } : { start: 0, end: null };
+}
+
+export function addEffect(type, params = {}, track = activeTrack(), { useSelection = true } = {}) {
   if (!track) { toast('Select a track first', { type: 'warn' }); return null; }
   checkpoint(`Add ${EFFECTS[type].name}`);
-  const fx = createEffect(type, params);
+  const fx = createEffect(type, { ...defaultRange(type, track, useSelection), ...params });
   track.effects.push(fx);
   effectsChanged(track);
   emit('effects-ui', { id: track.id, focus: fx.id });
@@ -370,7 +375,7 @@ export function addEffect(type, params = {}, track = activeTrack()) {
 export function addPreset(preset, track = activeTrack()) {
   if (!track) return;
   checkpoint(`Preset ${preset.name}`);
-  for (const [type, p] of preset.stack) track.effects.push(createEffect(type, p));
+  for (const [type, p] of preset.stack) track.effects.push(createEffect(type, { ...defaultRange(type, track, false), ...p }));
   effectsChanged(track);
   emit('effects-ui', { id: track.id });
   toast(`Added “${preset.name}” — tweak or disable any step`);
@@ -468,8 +473,9 @@ function pickFiles(accept, multiple = true) {
   });
 }
 
-async function saveBinary(data, name, filters) {
-  if (window.tuffNative?.saveFile) return window.tuffNative.saveFile({ defaultPath: name, filters, data });
+/** Saves via the native dialog (desktop app) or a download (browser). `path` skips the dialog. */
+async function saveBinary(data, name, filters, path = null) {
+  if (window.tuffNative?.saveFile) return window.tuffNative.saveFile({ defaultPath: name, filters, data, path });
   const url = URL.createObjectURL(new Blob([data]));
   const a = h('a', { href: url, download: name });
   document.body.append(a);
@@ -514,10 +520,14 @@ async function openProjectFile(file) {
     const tracks = [];
     for (const t of proj.tracks) {
       const channels = await resample(t.channels, proj.sampleRate);
-      tracks.push(createTrack({ ...t, channels, effects: t.effects.filter((e) => EFFECTS[e.type]).map((e) => ({ ...createEffect(e.type, e.params), enabled: e.enabled, collapsed: e.collapsed })) }));
+      const dur = (channels[0]?.length ?? 0) / sr();
+      const effects = t.effects.filter((e) => EFFECTS[e.type])
+        .map((e) => ({ ...createEffect(e.type, migrateParams(e.type, e.params, dur)), enabled: e.enabled, collapsed: e.collapsed }));
+      tracks.push(createTrack({ ...t, channels, effects }));
     }
     state.tracks = tracks;
     state.projectName = stripExt(file.name);
+    state.projectPath = window.tuffNative?.pathForFile?.(file) || null;
     clearHistory();
     setActive(tracks[0]?.id ?? null);
     setSelection(0);
@@ -534,13 +544,27 @@ def('open', {
   label: 'Open project…', icon: 'folder', keys: 'Mod+O', group: 'File',
   async run() { const [f] = await pickFiles('.tuff', false); if (f) openProjectFile(f); },
 });
+async function saveProject(saveAs) {
+  const data = serializeProject({ sampleRate: sr(), tracks: state.tracks });
+  // "Save" writes straight back to the file the project came from (desktop app); "Save as" always asks.
+  const path = saveAs ? null : state.projectPath;
+  const where = await saveBinary(data, `${state.projectName}.tuff`, [{ name: 'TuffAudio project', extensions: ['tuff'] }], path);
+  if (!where) return;
+  if (window.tuffNative && typeof where === 'string') {
+    state.projectPath = where;
+    state.projectName = stripExt(where.split(/[\\/]/).pop());
+    emit('project');
+  }
+  toast(path ? 'Saved' : 'Project saved — effects stay editable');
+}
+state.projectPath = null;
 def('save', {
-  label: 'Save project…', icon: 'save', keys: 'Mod+S', group: 'File', enabled: needTracks,
-  async run() {
-    const data = serializeProject({ sampleRate: sr(), tracks: state.tracks });
-    const where = await saveBinary(data, `${state.projectName}.tuff`, [{ name: 'TuffAudio project', extensions: ['tuff'] }]);
-    if (where) toast('Project saved — effects stay editable');
-  },
+  label: 'Save project', icon: 'save', keys: 'Mod+S', group: 'File', enabled: needTracks,
+  run: () => saveProject(false),
+});
+def('saveAs', {
+  label: 'Save project as…', icon: 'save', keys: 'Mod+Shift+S', group: 'File', enabled: needTracks,
+  run: () => saveProject(true),
 });
 def('new', {
   label: 'New project', icon: 'file', keys: 'Mod+N', group: 'File',
@@ -550,6 +574,7 @@ def('new', {
       checkpoint('New project');
       state.tracks = [];
       state.projectName = 'Untitled';
+      state.projectPath = null;
       setActive(null);
       setSelection(0);
       emit('tracks');

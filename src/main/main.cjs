@@ -78,6 +78,7 @@ function createWindow() {
     maximizable: true,
     backgroundColor: '#0a0c11',
     title: 'TuffAudio',
+    icon: path.join(__dirname, 'icon.png'),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     titleBarOverlay: isMac ? undefined : { color: '#0a0c11', symbolColor: '#c9cfdc', height: 44 },
     webPreferences: {
@@ -103,10 +104,14 @@ function createWindow() {
   win.loadURL('app://tuff/index.html');
 }
 
-ipcMain.handle('tuff:save-file', async (event, { defaultPath, filters, data }) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  const { canceled, filePath } = await dialog.showSaveDialog(win, { defaultPath, filters });
-  if (canceled || !filePath) return null;
+ipcMain.handle('tuff:save-file', async (event, { defaultPath, filters, data, path: knownPath }) => {
+  let filePath = knownPath;
+  if (!filePath) {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showSaveDialog(win, { defaultPath, filters });
+    if (res.canceled || !res.filePath) return null;
+    filePath = res.filePath;
+  }
   await fs.writeFile(filePath, Buffer.from(data));
   return filePath;
 });

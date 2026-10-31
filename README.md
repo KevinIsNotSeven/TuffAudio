@@ -2,13 +2,13 @@
 
 A modern audio editor in the spirit of Audacity, with a cleaner, faster workflow:
 
-- **Top-to-bottom timeline.** Time runs down the screen, and each track is a column. The scroll wheel moves through time, `Shift`+scroll moves across tracks, and `Ctrl/⌘`+scroll zooms. Drag a track's header sideways to move the track, drag a column's right edge to resize it, or drag the divider next to the side panel to resize the panel. Click a track name to select the track, and double-click it to rename the track. The follow button (`F`) turns auto-scroll during playback on or off, and Settings (the gear icon) has switches for smooth animations and quick presets. TuffAudio remembers these sizes and the window size.
-- **Quick trimming.** Drag down a waveform, then **Trim** (keep it), **Delete**, **Silence**, **Fade in/out**, or **Auto-trim** silence from both ends in one click. Drag the edges of a selection to fine-tune it. Undo/redo covers everything.
+- **Top-to-bottom timeline.** Time runs down the screen, and each track is a column you can drag to any position left or right. The scroll wheel moves through time, `Shift`+scroll moves across tracks, and `Ctrl/⌘`+scroll zooms. Each track's background shows where its audio starts and ends. Click a track name to select it, double-click to rename it, and right-click the header (or press ⋯) for Duplicate, Split, and Convert to mono or stereo. The volume and pan sliders snap to 0 dB and centre. Drag a column's right edge or the side-panel divider to resize them.
+- **Quick trimming.** Drag down a waveform, then use **Trim** (keep the selection), **Delete**, **Silence** or **Auto-trim** (remove silence from both ends). Drag the edges of a selection to fine-tune it. Undo and redo cover everything.
 - **Recording from anywhere.** Record a microphone, a line input, **desktop/system audio**, or **desktop + mic together**. You can record in mono or stereo. Existing tracks play while you record, so you can overdub.
 - **One-click mono ⇄ stereo.** Mix to mono (or keep only left or right), copy mono to both sides, swap L/R, split a stereo track into two mono tracks, or join two mono tracks into stereo. Export to mono or stereo.
-- **Non-destructive effects, like Blender's modifiers.** Each track has an effect stack. You can reorder it by dragging, toggle effects on and off, collapse them, duplicate them and reset them. Nothing touches your audio until you press **Apply** on one effect, on all of them, or on just the selection. The waveform shows the processed result live (press `V` to switch views).
+- **Non-destructive effects, like Blender's modifiers.** Every effect has its own **start and end time**. It appears as a coloured bar beside the waveform: drag the bar's ends to change when it starts and stops, double-click an end to send it to the start or end of the track, and click the bar to open its editor. Right-click a waveform to add an effect to the selection or the whole track. Effects stay editable until you **Apply** them, and the waveform previews the result live (`V` switches between the processed and original waveform).
 - **18 built-in effects:** Gain, Fade In, Fade Out, Normalize, Compressor, Limiter, Noise Gate, Equalizer, Filter, Reverb, Echo/Delay, Chorus, Distortion, Lo-Fi, Tremolo, Pan, Stereo Width and Reverse. There are also one-click presets (Voice Clean-up, Podcast Polish, Telephone, Lo-fi Tape and Big Hall). They're off by default; turn them on under Settings (the gear icon).
-- **Modern UI.** Dark glass theme, animated transport, GPU-friendly canvas waveforms that zoom down to individual samples, a command palette (`Ctrl/⌘+K`), drag-and-drop import, toasts and a live output meter.
+- **Modern UI.** Five themes (Tuff, Midnight, OLED Black, Sunset, Forest), smooth animations (can be turned off), customisable **keybinds**, a built-in **Check for updates**, a command palette (`Ctrl/⌘+K`), drag-and-drop import and a live output meter. TuffAudio also remembers your last recording source.
 - **Projects and export.** Save and reopen `.tuff` projects; effect stacks stay editable after a save. Export to **MP3, WAV, OGG (Vorbis), FLAC, Opus or AIFF**, in mono or stereo, for the whole project or just the selection.
 
 ## Getting started
@@ -43,6 +43,8 @@ Microphones and line inputs are recorded raw, with echo cancellation, noise supp
 
 ## Keyboard shortcuts
 
+These are the defaults. You can change any of them in **Settings → Keybinds**.
+
 | Action | Keys |
 | --- | --- |
 | Play / pause | `Space` |
@@ -58,9 +60,10 @@ Microphones and line inputs are recorded raw, with echo cancellation, noise supp
 | Zoom in / out / fit | `=` / `-` / `Ctrl/⌘+0` |
 | Auto-scroll on/off | `F` |
 | Command palette | `Ctrl/⌘+K` |
-| All shortcuts | `?` |
+| Save / Save as | `Ctrl/⌘+S` / `Ctrl/⌘+Shift+S` |
+| Keybinds (view and change) | `?` |
 
-On the mouse: drag down a waveform to select, double-click to select a whole track, and `Shift`+click to extend the selection. Scroll moves through time, `Ctrl/⌘`+scroll zooms, and `Shift`+scroll moves across tracks. While looping, moving or resizing the selection updates the loop as it plays. Double-click any slider to reset it.
+On the mouse: drag down a waveform to select, double-click to select a whole track, `Shift`+click to extend the selection, and right-click a waveform to add an effect. Scroll moves through time, `Ctrl/⌘`+scroll zooms, and `Shift`+scroll moves across tracks. While looping, moving or resizing the selection updates the loop as it plays. Double-click any slider to reset it.
 
 ## How it's built
 

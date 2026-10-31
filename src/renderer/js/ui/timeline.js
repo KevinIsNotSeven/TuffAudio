@@ -1,17 +1,20 @@
-// Timeline: time runs top → bottom, tracks are side-by-side columns.
+// Timeline: time runs top → bottom, tracks are columns placed freely left/right.
 // The scroll wheel moves through time; Shift+wheel scrolls across tracks;
-// Ctrl/⌘+wheel zooms. Columns can be resized by dragging their right edge.
+// Ctrl/⌘+wheel zooms. Columns resize from their right edge, and each track's
+// effects appear as bars beside the waveform showing when they start and stop.
 
 import { state, on, emit, setSelection, setActive, hasRange, projectDuration, trackDuration, checkpoint, getTrack, prefs, animateView } from '../state.js';
 import { peaks, PEAK_BLOCK } from '../dsp/analysis.js';
 import { previews, seek, tick } from '../audio/engine.js';
-import { run, recorder, zoomAround } from '../actions.js';
+import { run, recorder, zoomAround, addEffect } from '../actions.js';
+import { EFFECTS, effectRange } from '../audio/effects.js';
+import { openFxEditor, effectPicker } from './inspector.js';
 import { $, $$, h, iconEl, popover, formatTime } from './dom.js';
 
-export const HEAD_H = 138;
+export const HEAD_H = 96;
 export const COL_W = 260;
 const COL_MIN = 150, COL_MAX = 900;
-let area, scroller, colsEl, rulerCv, playheadEl, vbar, vthumb, emptyEl;
+let area, scroller, colsEl, rulerCv, playheadEl, vbar, vthumb;
 const dpr = () => window.devicePixelRatio || 1;
 
 // "pos" = pixels along the time axis (downwards from the top of the lanes).
@@ -26,7 +29,6 @@ export function initTimeline() {
   playheadEl = $('#playhead');
   vbar = $('#vscroll');
   vthumb = $('#vscroll .thumb');
-  emptyEl = $('#emptyState');
 
   new ResizeObserver(layout).observe(area);
   setupRuler();
@@ -41,7 +43,9 @@ export function initTimeline() {
   on('trackprops', updateColumnStates);
   on('effects', updateColumnStates);
   on('effects-ui', updateColumnStates);
-  on('view', () => { clampScroll(); drawAll(); drawRuler(); updateScrollbar(); });
+  on('view', () => { clampScroll(); drawAll(); drawRuler(); updateScrollbar(); layoutAllStrips(); });
+  on('theme', () => { readPalette(); drawAll(); });
+  readPalette();
   on('transport', onTransport);
 
   renderColumns();
@@ -61,12 +65,15 @@ function layout() {
   updateScrollbar();
 }
 
+/** Matches a canvas's backing store to its CSS size. Returns true if it changed. */
 function sizeCanvas(cv) {
   const w = cv.clientWidth, hgt = cv.clientHeight;
   if (cv.width !== Math.round(w * dpr()) || cv.height !== Math.round(hgt * dpr())) {
     cv.width = Math.round(w * dpr());
     cv.height = Math.round(hgt * dpr());
+    return true;
   }
+  return false;
 }
 
 function contentDuration() {
@@ -82,9 +89,10 @@ function clampScroll() {
 
 function renderColumns() {
   const left = scroller.scrollLeft;
+  assignPositions();
   colsEl.replaceChildren(...state.tracks.map(columnFor));
   if (state.recording) colsEl.append(recordingColumn());
-  emptyEl.hidden = state.tracks.length > 0 || state.recording;
+  sizeStrip();
   layout();
   updateColumnStates();
   scroller.scrollLeft = left;
@@ -133,96 +141,154 @@ function columnFor(t) {
   let marked = false;
   const mark = (label) => () => { if (!marked) { checkpoint(label); marked = true; } };
   const unmark = () => { marked = false; };
+  // Both sliders snap to their neutral point (0 dB / centre) when dragged close to it.
   const vol = slider({ min: -36, max: 12, step: 0.1, value: t.gainDb, onStart: mark('Volume'),
-    onInput: (v) => { t.gainDb = v; volVal.textContent = fmtDb(v); emit('trackprops', t.id); },
+    onInput: (v) => { if (Math.abs(v) < 1) { v = 0; vol.value = 0; } t.gainDb = v; volVal.textContent = fmtDb(v); emit('trackprops', t.id); },
     onReset: () => { t.gainDb = 0; vol.value = 0; volVal.textContent = fmtDb(0); emit('trackprops', t.id); } });
   const pan = slider({ min: -1, max: 1, step: 0.01, value: t.pan, cls: 'center', onStart: mark('Pan'),
-    onInput: (v) => { t.pan = v; panVal.textContent = fmtPan(v); emit('trackprops', t.id); },
+    onInput: (v) => { if (Math.abs(v) < 0.07) { v = 0; pan.value = 0; } t.pan = v; panVal.textContent = fmtPan(v); emit('trackprops', t.id); },
     onReset: () => { t.pan = 0; pan.value = 0; panVal.textContent = fmtPan(0); emit('trackprops', t.id); } });
   vol.addEventListener('change', unmark);
   pan.addEventListener('change', unmark);
 
-  const chan = h('button.chip.chan', { title: 'Mono / stereo', onclick: (e) => channelMenu(t, e.currentTarget) });
-  const fx = h('button.chip.fx', { title: 'Effects on this track', onclick: () => { setActive(t.id); emit('focus-inspector'); } });
-
+  const more = h('button.more-btn', { title: 'Track options (or right-click the header)', onclick: (e) => trackMenu(t, e.currentTarget) }, iconEl('more'));
   const head = h('div.track-head', {},
     h('div.color', { style: { background: t.color } }),
-    h('div.th-row', {}, name,
-      h('button.more-btn', { title: 'Track options', onclick: (e) => trackMenu(t, e.currentTarget) }, iconEl('more'))),
-    h('div.th-row.btns', {},
+    h('div.th-row.top', {}, name,
+      h('button.del-btn', { title: 'Delete track', onclick: () => run('deleteTrack', t.id) }, iconEl('trash')),
       h('button.tog.mute', { title: 'Mute (M)', onclick: () => run('muteTrack', t.id) }, 'M'),
       h('button.tog.solo', { title: 'Solo (S)', onclick: () => run('soloTrack', t.id) }, 'S'),
-      chan, fx),
-    h('div.th-row.slider-row', {}, iconEl('gain'), vol, volVal),
-    h('div.th-row.slider-row', {}, iconEl('pan'), pan, panVal),
+      more),
+    h('div.th-row.slider-row', { title: 'Volume' }, iconEl('gain'), vol, volVal),
+    h('div.th-row.slider-row', { title: 'Pan' }, iconEl('pan'), pan, panVal),
   );
+  // Right-clicking anywhere on the header opens the same menu as the ⋯ button.
+  head.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.track-name:not([readonly])')) return; // normal text menu while renaming
+    e.preventDefault();
+    trackMenu(t, { x: e.clientX, y: e.clientY });
+  });
+
   const cv = h('canvas.wave');
   const lane = h('div.lane', {}, cv);
+  const strip = h('div.fx-strip');
   setupLane(lane, cv, t.id);
-  const col = h('div.track-col', { 'data-id': t.id, style: { width: `${t.width || COL_W}px` } }, head, lane);
+  const col = h('div.track-col', { 'data-id': t.id, style: { width: `${colWidth(t)}px`, left: `${t.x}px` } },
+    head, h('div.col-body', {}, lane, strip));
   col.append(resizeHandle(col, t));
   setupColumnDrag(head, col, t);
+  layoutStrip(col, t);
   return col;
+}
+
+const colWidth = (t) => t.width || COL_W;
+
+/**
+ * Tracks sit at free horizontal positions (t.x). New tracks without a position are
+ * placed to the right of everything else. Keeps state.tracks ordered left → right.
+ */
+function assignPositions() {
+  let right = 0;
+  for (const t of state.tracks) if (t.x != null) right = Math.max(right, t.x + colWidth(t));
+  for (const t of state.tracks) if (t.x == null) { t.x = right; right += colWidth(t); }
+  state.tracks.sort((a, b) => a.x - b.x);
+  return right;
+}
+
+const overlaps = (x, w, o) => x < o.x + colWidth(o) - 1 && x + w > o.x + 1;
+
+/** Nearest x to `want` where a column of width `w` fits without overlapping the others. */
+function freeSpot(want, w, others) {
+  const candidates = [Math.max(0, want), 0];
+  for (const o of others) candidates.push(o.x + colWidth(o), o.x - w);
+  return candidates
+    .filter((x) => x >= 0 && !others.some((o) => overlaps(x, w, o)))
+    .sort((a, b) => Math.abs(a - want) - Math.abs(b - want))[0] ?? 0;
+}
+
+/** After a column grows, push any columns it now overlaps further right. */
+function pushRight(t) {
+  const sorted = [...state.tracks].sort((a, b) => a.x - b.x);
+  let edge = t.x + colWidth(t);
+  for (const o of sorted) {
+    if (o === t || o.x < t.x) continue;
+    if (o.x < edge) o.x = edge;
+    edge = Math.max(edge, o.x + colWidth(o));
+  }
+  for (const c of $$('.track-col', colsEl)) {
+    const tr = getTrack(c.dataset.id);
+    if (tr) c.style.left = `${tr.x}px`;
+  }
+  sizeStrip();
+}
+
+function sizeStrip() {
+  let right = 0;
+  for (const t of state.tracks) right = Math.max(right, (t.x ?? 0) + colWidth(t));
+  colsEl.style.width = `${right + 320}px`; // room to drag tracks further right
 }
 
 // Controls inside a header that should never start a track drag.
 const HEAD_CONTROLS = 'button, input[type=range], input:not([readonly])';
 
-/** Click a header to select the track; drag it sideways to move the track. */
+/** Click a header to select the track; drag it to place the track anywhere left or right. */
 function setupColumnDrag(head, col, t) {
   head.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || e.target.closest(HEAD_CONTROLS)) return;
     setActive(t.id, { additive: e.shiftKey || e.metaKey || e.ctrlKey });
-    const x0 = e.clientX;
-    const from = state.tracks.indexOf(t);
-    let dragging = false, to = from, scrollTimer = null;
-    const others = () => $$('.track-col:not(.recording)', colsEl).filter((c) => c !== col);
-    const clearMarks = () => others().forEach((c) => c.classList.remove('drop-before', 'drop-after'));
+    const x0 = e.clientX, left0 = scroller.scrollLeft, startX = t.x;
+    let dragging = false, scrollTimer = null, x = startX;
+    const place = (clientX) => {
+      x = Math.max(0, Math.round((startX + clientX - x0 + scroller.scrollLeft - left0) / 4) * 4);
+      col.style.left = `${x}px`;
+      const others = state.tracks.filter((o) => o !== t);
+      col.classList.toggle('blocked', others.some((o) => overlaps(x, colWidth(t), o)));
+    };
     const move = (ev) => {
-      const dx = ev.clientX - x0;
       if (!dragging) {
-        if (Math.abs(dx) < 6) return;
+        if (Math.abs(ev.clientX - x0) < 6) return;
         dragging = true;
-        head.setPointerCapture(e.pointerId);
         col.classList.add('dragging');
         document.body.classList.add('dragging-track');
       }
-      col.style.transform = `translateX(${dx + (scroller.scrollLeft - left0)}px)`;
-      const cols = others();
-      to = cols.filter((c) => { const r = c.getBoundingClientRect(); return r.left + r.width / 2 < ev.clientX; }).length;
-      clearMarks();
-      if (cols.length) {
-        if (to < cols.length) cols[to].classList.add('drop-before');
-        else cols.at(-1).classList.add('drop-after');
-      }
+      place(ev.clientX);
       // Scroll the track strip when dragging near its edges.
       clearInterval(scrollTimer);
       const r = scroller.getBoundingClientRect();
       const edge = ev.clientX < r.left + 40 ? -12 : ev.clientX > r.right - 40 ? 12 : 0;
-      if (edge) scrollTimer = setInterval(() => { scroller.scrollLeft += edge; }, 16);
+      if (edge) scrollTimer = setInterval(() => { scroller.scrollLeft += edge; place(ev.clientX); }, 16);
     };
-    const left0 = scroller.scrollLeft;
     const up = () => {
-      head.removeEventListener('pointermove', move);
-      head.removeEventListener('pointerup', up);
-      head.removeEventListener('pointercancel', up);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
       clearInterval(scrollTimer);
       if (!dragging) return;
-      clearMarks();
-      col.classList.remove('dragging');
-      col.style.transform = '';
+      col.classList.remove('dragging', 'blocked');
       document.body.classList.remove('dragging-track');
-      if (to !== from) run('reorderTrack', t.id, to);
+      // Settle in the nearest free spot so tracks never overlap.
+      const finalX = freeSpot(x, colWidth(t), state.tracks.filter((o) => o !== t));
+      if (finalX === startX) { col.style.left = `${startX}px`; return; }
+      checkpoint('Move track');
+      t.x = finalX;
+      emit('tracks');
     };
-    head.addEventListener('pointermove', move);
-    head.addEventListener('pointerup', up);
-    head.addEventListener('pointercancel', up);
+    // Listen on the window so fast drags that leave the header are still followed.
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   });
 }
 
 /** Drag the right edge of a column to resize it; double-click resets. */
 function resizeHandle(col, t) {
   const grip = h('div.col-resize', { title: 'Drag to resize · double-click to reset' });
+  const apply = () => {
+    col.style.width = `${colWidth(t)}px`;
+    pushRight(t);
+    sizeCanvas(col.querySelector('canvas.wave'));
+    drawCol(col);
+  };
   grip.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     grip.setPointerCapture(e.pointerId);
@@ -230,10 +296,7 @@ function resizeHandle(col, t) {
     document.body.classList.add('resizing-col');
     const move = (ev) => {
       t.width = Math.max(COL_MIN, Math.min(COL_MAX, Math.round(w0 + ev.clientX - x0)));
-      col.style.width = `${t.width}px`;
-      const cv = col.querySelector('canvas.wave');
-      sizeCanvas(cv);
-      drawCol(col);
+      apply();
     };
     const up = () => {
       document.body.classList.remove('resizing-col');
@@ -243,58 +306,145 @@ function resizeHandle(col, t) {
     grip.addEventListener('pointermove', move);
     grip.addEventListener('pointerup', up);
   });
-  grip.addEventListener('dblclick', () => {
-    t.width = null;
-    col.style.width = `${COL_W}px`;
-    sizeCanvas(col.querySelector('canvas.wave'));
-    drawCol(col);
-  });
+  grip.addEventListener('dblclick', () => { t.width = null; apply(); });
   return grip;
 }
 
 function recordingColumn() {
   const cv = h('canvas.wave');
-  return h('div.track-col.recording', { 'data-id': '__rec', style: { width: `${COL_W}px` } },
+  return h('div.track-col.recording', { 'data-id': '__rec', style: { width: `${COL_W}px`, left: `${assignPositions()}px` } },
     h('div.track-head', {},
       h('div.color', { style: { background: 'var(--rec)' } }),
       h('div.th-row', {}, h('span.rec-dot'), h('span.rec-title', {}, 'Recording…')),
       h('div.th-row', {}, h('span.rec-time', {}, '00:00.000')),
       h('div.th-row', {}, h('div.meter.rec-meter', {}, h('div.fill')))),
-    h('div.lane', {}, cv));
-}
-
-function channelMenu(t, anchor) {
-  setActive(t.id);
-  const stereo = t.channels.length > 1;
-  popover(anchor, stereo ? [
-    { heading: 'Stereo track' },
-    { label: 'Make mono — mix both sides', icon: 'mono', run: () => run('toMono', 'mix') },
-    { label: 'Make mono — keep left', icon: 'mono', run: () => run('toMono', 'left') },
-    { label: 'Make mono — keep right', icon: 'mono', run: () => run('toMono', 'right') },
-    { separator: true },
-    { label: 'Swap left / right', icon: 'swap', run: () => run('swap') },
-    { label: 'Split into two mono tracks', icon: 'split', run: () => run('splitStereo') },
-  ] : [
-    { heading: 'Mono track' },
-    { label: 'Make stereo (copy to both sides)', icon: 'stereo', run: () => run('toStereo') },
-  ]);
+    h('div.col-body', {}, h('div.lane', {}, cv)));
 }
 
 function trackMenu(t, anchor) {
   setActive(t.id);
-  const i = state.tracks.indexOf(t);
+  const stereo = t.channels.length > 1;
   popover(anchor, [
-    { label: 'Duplicate track', icon: 'copy', run: () => run('duplicateTrack', t.id) },
-    { label: 'Move left', icon: 'arrowLeft', disabled: i === 0, run: () => run('moveTrack', t.id, -1) },
-    { label: 'Move right', icon: 'arrowRight', disabled: i === state.tracks.length - 1, run: () => run('moveTrack', t.id, 1) },
-    { separator: true },
-    t.channels.length > 1
-      ? { label: 'Convert to mono', icon: 'mono', run: () => run('toMono', 'mix') }
-      : { label: 'Convert to stereo', icon: 'stereo', run: () => run('toStereo') },
-    { label: 'Auto-trim silence', icon: 'wand', run: () => run('autoTrim') },
-    { separator: true },
-    { label: 'Delete track', icon: 'trash', danger: true, run: () => run('deleteTrack', t.id) },
-  ], { align: 'end' });
+    { label: 'Duplicate', icon: 'copy', run: () => run('duplicateTrack', t.id) },
+    stereo && { label: 'Split tracks', sub: 'Left and right become two mono tracks', icon: 'split', run: () => run('splitStereo') },
+    stereo && { label: 'Convert to mono', sub: 'Mixes left and right together', icon: 'mono', run: () => run('toMono', 'mix') },
+    !stereo && { label: 'Convert to stereo', sub: 'Copies the sound to both sides', icon: 'stereo', run: () => run('toStereo') },
+  ].filter(Boolean), { align: 'end' });
+}
+
+// ---- Effect bars (each effect's time range, beside the waveform) ------------------------
+
+const LANE_W = 20;
+const CATEGORY_COLORS = {
+  Volume: '#f0606f', Dynamics: '#f59f45', Tone: '#2fc7b5', Space: '#4f9dff', Character: '#d36bff', Stereo: '#7bd65a', Time: '#e8c547',
+};
+
+/** Packs overlapping effect ranges into side-by-side lanes. */
+function packLanes(t) {
+  const dur = trackDuration(t);
+  const items = t.effects.map((fx) => ({ fx, r: effectRange(fx.params, dur) })).sort((a, b) => a.r[0] - b.r[0]);
+  const ends = [];
+  for (const it of items) {
+    let lane = ends.findIndex((e) => e <= it.r[0] + 1e-6);
+    if (lane < 0) { lane = ends.length; ends.push(0); }
+    ends[lane] = it.r[1];
+    it.lane = lane;
+  }
+  return { items, lanes: ends.length };
+}
+
+function layoutStrip(col, t) {
+  const strip = col.querySelector('.fx-strip');
+  if (!strip) return;
+  const { items, lanes } = packLanes(t);
+  strip.style.width = `${lanes ? lanes * LANE_W + 4 : 0}px`;
+  const existing = new Map($$('.fx-bar', strip).map((b) => [b.dataset.fx, b]));
+  for (const { fx, r, lane } of items) {
+    let bar = existing.get(fx.id);
+    existing.delete(fx.id);
+    if (!bar) { bar = fxBar(col, t, fx); strip.append(bar); }
+    const def = EFFECTS[fx.type];
+    const top = timeToPos(r[0]);
+    const height = Math.max(22, (r[1] - r[0]) * state.view.pps);
+    bar.style.cssText = `left:${2 + lane * LANE_W}px; top:${top}px; height:${height}px; --c:${CATEGORY_COLORS[def.category] || '#8b7bff'}`;
+    bar.classList.toggle('off', !fx.enabled);
+    bar.querySelector('.fx-bar-label').textContent = def.name;
+  }
+  existing.forEach((b) => b.remove());
+  // The waveform canvas shrinks when the strip grows.
+  const cv = col.querySelector('canvas.wave');
+  if (cv && col.isConnected && sizeCanvas(cv)) drawCol(col);
+}
+
+function layoutAllStrips() {
+  for (const col of $$('.track-col', colsEl)) {
+    const t = getTrack(col.dataset.id);
+    if (t) layoutStrip(col, t);
+  }
+}
+
+function fxBar(col, t, fx) {
+  const bar = h('div.fx-bar', { 'data-fx': fx.id, title: 'Click to edit · drag the ends to change when it starts and stops' },
+    h('div.fx-h.top', { title: 'Drag to change the start · double-click: start of track' }),
+    h('span.fx-bar-label'),
+    h('div.fx-h.bottom', { title: 'Drag to change the end · double-click: end of track' }));
+  const dur = () => trackDuration(t);
+  const commit = () => { emit('effects', { id: t.id, fxId: fx.id, structural: false }); layoutStrip(col, t); };
+  // Which part of the bar a pointer is over (by position, so it also works while the pointer is captured).
+  const partAt = (clientY) => {
+    const r = bar.getBoundingClientRect();
+    if (clientY - r.top < 8) return 'start';
+    if (r.bottom - clientY < 8) return 'end';
+    return 'move';
+  };
+
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    setActive(t.id);
+    const mode = partAt(e.clientY);
+    const y0 = e.clientY;
+    const [s0, e0] = effectRange(fx.params, dur());
+    let moved = false;
+    bar.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const dt = (ev.clientY - y0) / state.view.pps;
+      if (!moved) {
+        if (Math.abs(ev.clientY - y0) < 3) return;
+        moved = true;
+        checkpoint(`Adjust ${EFFECTS[fx.type].name} timing`);
+        bar.classList.add('dragging');
+      }
+      const D = dur(), min = Math.min(0.02, D);
+      if (mode === 'start') fx.params.start = Math.max(0, Math.min(e0 - min, s0 + dt));
+      else if (mode === 'end') { const v = Math.max(s0 + min, Math.min(D, e0 + dt)); fx.params.end = v >= D - 1e-3 ? null : v; }
+      else {
+        const len = e0 - s0, ns = Math.max(0, Math.min(D - len, s0 + dt));
+        fx.params.start = ns;
+        fx.params.end = ns + len >= D - 1e-3 ? null : ns + len;
+      }
+      commit();
+    };
+    const up = () => {
+      bar.removeEventListener('pointermove', move);
+      bar.removeEventListener('pointerup', up);
+      bar.classList.remove('dragging');
+      if (!moved && mode === 'move') openFxEditor(bar, t, fx);
+      if (moved) emit('effects-ui', { id: t.id });
+    };
+    bar.addEventListener('pointermove', move);
+    bar.addEventListener('pointerup', up);
+  });
+  bar.addEventListener('dblclick', (e) => {
+    const part = partAt(e.clientY);
+    if (part === 'move') return;
+    checkpoint(`Adjust ${EFFECTS[fx.type].name} timing`);
+    if (part === 'start') fx.params.start = 0; else fx.params.end = null;
+    commit();
+    emit('effects-ui', { id: t.id });
+  });
+  bar.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); openFxEditor(bar, t, fx); });
+  return bar;
 }
 
 function updateColumnStates() {
@@ -306,15 +456,9 @@ function updateColumnStates() {
     col.classList.toggle('muted', t.mute || (state.tracks.some((x) => x.solo) && !t.solo));
     col.querySelector('.mute').classList.toggle('on', t.mute);
     col.querySelector('.solo').classList.toggle('on', t.solo);
-    const chan = col.querySelector('.chan');
-    const stereo = t.channels.length > 1;
-    chan.replaceChildren(iconEl(stereo ? 'stereo' : 'mono'), stereo ? 'Stereo' : 'Mono');
-    const fx = col.querySelector('.chip.fx');
-    const n = t.effects.length, on_ = t.effects.filter((e) => e.enabled).length;
-    fx.replaceChildren(iconEl('sparkles'), n ? `${on_}/${n} fx` : 'Add fx');
-    fx.classList.toggle('has', on_ > 0);
     const name = col.querySelector('.track-name');
     if (document.activeElement !== name) name.value = t.name;
+    layoutStrip(col, t);
   }
 }
 
@@ -349,19 +493,31 @@ function drawCol(col) {
   const t = getTrack(col.dataset.id);
   if (!t) return;
 
-  // Area past the end of this track.
-  const endU = timeToPos(trackDuration(t));
-  if (endU < len) { g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(Math.max(0, endU), 0, len, across); }
+  // The audio's extent: a tinted background with glowing caps marking where it starts and ends.
+  const startU = timeToPos(0), endU = timeToPos(trackDuration(t));
+  if (endU > 0 && startU < len) {
+    g.fillStyle = pal.laneFill;
+    g.fillRect(startU, 0, endU - startU, across);
+    const cap = Math.min(22, (endU - startU) / 3);
+    const head = g.createLinearGradient(startU, 0, startU + cap, 0);
+    head.addColorStop(0, pal.cap); head.addColorStop(1, pal.capFade);
+    g.fillStyle = head;
+    g.fillRect(startU, 0, cap, across);
+    const tail = g.createLinearGradient(endU - cap, 0, endU, 0);
+    tail.addColorStop(0, pal.capFade); tail.addColorStop(1, pal.cap);
+    g.fillStyle = tail;
+    g.fillRect(endU - cap, 0, cap, across);
+  }
 
   // Selection
   const { start, end } = state.selection;
   const selected = state.selectedIds.has(t.id);
   if (end > start) {
     const u0 = timeToPos(start), u1 = timeToPos(end);
-    g.fillStyle = selected ? 'rgba(139,123,255,0.22)' : 'rgba(255,255,255,0.035)';
+    g.fillStyle = selected ? pal.sel : 'rgba(255,255,255,0.035)';
     g.fillRect(u0, 0, u1 - u0, across);
     if (selected) {
-      g.fillStyle = 'rgba(167,155,255,0.9)';
+      g.fillStyle = pal.selEdge;
       g.fillRect(Math.round(u0), 0, 1, across);
       g.fillRect(Math.round(u1) - 1, 0, 1, across);
     }
@@ -398,6 +554,18 @@ function drawGrid(g, len, across) {
     if (u > len) break;
     g.fillRect(Math.round(u), 0, 1, across);
   }
+}
+
+// Theme colours for the canvases, read from CSS variables (refreshed when the theme changes).
+const pal = {};
+function readPalette() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+  pal.laneFill = v('--lane-fill', 'rgba(20,20,110,0.55)');
+  pal.cap = v('--lane-cap', 'rgba(232,107,255,0.85)');
+  pal.capFade = v('--lane-cap-fade', 'rgba(232,107,255,0)');
+  pal.sel = v('--sel-fill', 'rgba(110,130,255,0.35)');
+  pal.selEdge = v('--sel-edge', 'rgba(180,190,255,0.95)');
 }
 
 const colorCache = new Map();
@@ -615,6 +783,23 @@ function setupLane(lane, cv, id) {
     };
     lane.addEventListener('pointermove', move);
     lane.addEventListener('pointerup', up);
+  });
+  // Right-click the waveform to add an effect: over the selection if you clicked inside it,
+  // otherwise over the whole track.
+  lane.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const t = getTrack(id);
+    if (!t) return;
+    const time = posToTime(e.clientY - cv.getBoundingClientRect().top);
+    const inSel = hasRange() && state.selectedIds.has(id) && time >= state.selection.start && time <= state.selection.end;
+    if (!inSel) setActive(id);
+    effectPicker({ x: e.clientX, y: e.clientY }, {
+      title: inSel ? 'Add effect to the selection' : 'Add effect to this track',
+      onPick: (type) => {
+        const fx = addEffect(type, {}, t, { useSelection: inSel });
+        if (fx) requestAnimationFrame(() => { const bar = colsEl.querySelector(`.fx-bar[data-fx="${fx.id}"]`); if (bar) openFxEditor(bar, t, fx); });
+      },
+    });
   });
   lane.addEventListener('dblclick', () => {
     const t = getTrack(id);

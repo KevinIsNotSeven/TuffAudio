@@ -1,6 +1,6 @@
 // Audio engine: playback graph, live effect updates, offline rendering.
 
-import { EFFECTS } from './effects.js';
+import { EFFECTS, effectRange, isFullRange, scheduleGate } from './effects.js';
 import { state, on, emit, hasRange, projectDuration, getTrack } from '../state.js';
 import { dbToGain } from '../dsp/analysis.js';
 import { spliceProcessed, padEnd } from '../dsp/edit.js';
@@ -57,12 +57,36 @@ const fxKey = (effects) => JSON.stringify(effects.map((e) => [e.type, e.params])
 export const enabledEffects = (track) => track.effects.filter((e) => e.enabled && EFFECTS[e.type]);
 
 /** Builds a serial chain of node-effects. Returns {input, output, items, dispose}. */
+/**
+ * Limits a node effect to its time range: inside the range you hear the effect,
+ * outside it the untouched signal. Always present, so dragging the range is live.
+ */
+function rangeGate(c, inst, params, timing) {
+  const input = c.createGain(), output = c.createGain(), dry = c.createGain(), wet = c.createGain();
+  input.connect(dry).connect(output);
+  input.connect(inst.input);
+  inst.output.connect(wet).connect(output);
+  const schedule = (p) => {
+    const [s, e] = effectRange(p, timing.duration);
+    scheduleGate(c, dry.gain, s, e, timing, 0, 1);
+    scheduleGate(c, wet.gain, s, e, timing, 1, 0);
+  };
+  schedule(params);
+  return {
+    input, output, timed: true,
+    update(p) { inst.update?.(p); schedule(p); },
+    dispose() { inst.dispose?.(); },
+  };
+}
+
 function buildChain(c, effects, timing) {
   const input = c.createGain();
   let tail = input;
   const items = [];
   for (const fx of effects) {
-    const inst = EFFECTS[fx.type].build(c, fx.params, timing);
+    const def = EFFECTS[fx.type];
+    let inst = def.build(c, fx.params, timing);
+    if (!def.selfRanged) inst = rangeGate(c, inst, fx.params, timing);
     tail.connect(inst.input);
     tail = inst.output;
     items.push({ id: fx.id, inst });
@@ -98,7 +122,13 @@ export async function renderChain(channels, effects, sr = state.sampleRate) {
     const def = EFFECTS[fx.type];
     if (def.kind === 'node') { pending.push(fx); continue; }
     if (pending.length) { cur = await renderNodes(cur, pending, sr); pending = []; }
-    cur = def.process(cur, fx.params, sr);
+    const dur = (cur[0]?.length ?? 0) / sr;
+    const processed = def.process(cur, fx.params, sr);
+    if (isFullRange(fx.params, dur)) cur = processed;
+    else {
+      const [s, e] = effectRange(fx.params, dur);
+      cur = spliceProcessed(cur, processed, Math.round(s * sr), Math.round(e * sr), Math.round(sr * 0.005));
+    }
   }
   if (pending.length) cur = await renderNodes(cur, pending, sr);
   return cur;
@@ -151,8 +181,8 @@ async function buildVoice(c, track, dest, timing, loop) {
   return {
     source, chain, gain, panner,
     liveIds: new Set(live.map((e) => e.id)),
-    /** Start the source; time-based automation (fades) is re-scheduled for the real start time. */
-    start(when, offset) {
+    /** Re-schedule time-based automation (fades, effect ranges) for playback of `offset` at `when`. */
+    retime(when, offset) {
       timing.when = when;
       timing.offset = offset;
       for (const { id, inst } of chain.items) {
@@ -160,6 +190,10 @@ async function buildVoice(c, track, dest, timing, loop) {
         const fx = track.effects.find((e) => e.id === id);
         if (fx) inst.update(fx.params);
       }
+    },
+    /** Start the source; automation is re-scheduled for the real start time. */
+    start(when, offset) {
+      this.retime(when, offset);
       if (offset < source.buffer.duration) source.start(when, offset);
     },
     stop() {
@@ -214,6 +248,7 @@ export async function play(from) {
     voices.set(id, v);
   }
   startCtxTime = when;
+  loopCycle = 0;
   startOffset = offset;
   state.playing = true;
   emit('transport');
@@ -239,8 +274,20 @@ export function seek(t) {
 }
 
 /** Called from the UI's animation loop. Returns the current position. */
+let loopCycle = 0;
 export function tick() {
   if (!state.playing) return state.playhead;
+  // Each time a loop wraps, effect ranges and fades are scheduled again for the new pass.
+  if (loopRange && ctx) {
+    const raw = startOffset + Math.max(0, ctx.currentTime - startCtxTime);
+    const len = loopRange.end - loopRange.start;
+    const cycle = raw >= loopRange.end ? Math.floor((raw - loopRange.start) / len) : 0;
+    if (cycle !== loopCycle) {
+      loopCycle = cycle;
+      const wrapAt = startCtxTime + (loopRange.start + cycle * len - startOffset);
+      voices.forEach((v) => v.retime(wrapAt, loopRange.start));
+    }
+  }
   const p = position();
   if (p >= endTime) {
     stop();
@@ -306,6 +353,7 @@ function updateLoop() {
   if (inside && fits) {
     startOffset = pos;
     startCtxTime = ctx.currentTime;
+    loopCycle = 0;
     loopRange = next;
     voices.forEach((v) => { v.source.loopStart = next.start; v.source.loopEnd = next.end; });
     emit('transport');

@@ -1,9 +1,9 @@
 // Right-hand inspector: the non-destructive effect ("modifier") stack for the active track.
 
-import { state, on, emit, activeTrack, checkpoint, hasRange, prefs } from '../state.js';
-import { EFFECTS, CATEGORIES, PRESETS, createEffect, defaultParams } from '../audio/effects.js';
+import { state, on, emit, activeTrack, checkpoint, hasRange, prefs, trackDuration } from '../state.js';
+import { EFFECTS, CATEGORIES, PRESETS, createEffect, defaultParams, effectRange } from '../audio/effects.js';
 import { run, addEffect, addPreset, applyEffect } from '../actions.js';
-import { $, h, iconEl, popover, closeMenu, segmented } from './dom.js';
+import { $, h, iconEl, popover, closeMenu, segmented, formatTime } from './dom.js';
 
 let root;
 
@@ -70,7 +70,7 @@ function card(t, fx, index, isNew) {
     onclick: () => { checkpoint(`${fx.enabled ? 'Disable' : 'Enable'} ${def.name}`); fx.enabled = !fx.enabled; emitFx(t, fx, true); render(); },
   }, h('span'));
 
-  const body = h('div.fx-body');
+  const body = h('div.fx-body', {}, rangeControls(t, fx));
   for (const p of def.params) body.append(paramControl(t, fx, p));
   if (!def.params.length) body.append(h('p.fx-note', {}, def.description));
 
@@ -102,7 +102,7 @@ function cardMenu(t, fx, index, anchor) {
     { label: 'Apply to selection only', icon: 'crop', disabled: !hasRange(), run: () => applyEffect(t, fx.id, { selectionOnly: true }) },
     { separator: true },
     { label: 'Duplicate', icon: 'copy', run: () => { checkpoint(`Duplicate ${def.name}`); t.effects.splice(index + 1, 0, createEffect(fx.type, fx.params)); emitFx(t, fx, true); render(); } },
-    { label: 'Reset to defaults', icon: 'refresh', run: () => { checkpoint(`Reset ${def.name}`); fx.params = defaultParams(fx.type); emitFx(t, fx, true); render(); } },
+    { label: 'Reset to defaults', icon: 'refresh', run: () => { checkpoint(`Reset ${def.name}`); fx.params = { ...defaultParams(fx.type), start: fx.params.start, end: fx.params.end }; emitFx(t, fx, true); render(); } },
     { label: 'Move up', icon: 'arrowUp', disabled: index === 0, run: () => move(t, index, index - 1) },
     { label: 'Move down', icon: 'arrowDown', disabled: index === t.effects.length - 1, run: () => move(t, index, index + 1) },
     { separator: true },
@@ -146,6 +146,53 @@ function setupDrag(el, t, fx) {
 }
 
 // ---- Parameter controls -----------------------------------------------------------------
+
+const fmtT = (s) => formatTime(s).replace(/(\.\d\d)\d$/, '$1');
+
+/** Start / End time sliders for an effect's range (End at the far right = "end of track"). */
+function rangeControls(t, fx) {
+  let gesture = false;
+  const begin = () => { if (!gesture) { checkpoint(`Adjust ${EFFECTS[fx.type].name} timing`); gesture = true; } };
+  const done = () => { gesture = false; emit('effects-ui', { id: t.id, keepEditor: true }); };
+  const dur = Math.max(0.01, trackDuration(t));
+  const [s0, e0] = effectRange(fx.params, dur);
+  const mk = (label, value, isEnd) => {
+    const out = h('output.time-box', {}, isEnd && fx.params.end == null ? 'End' : fmtT(value));
+    const input = h('input.range', { type: 'range', min: 0, max: dur, step: Math.max(0.001, dur / 2000), value });
+    const paint = () => input.style.setProperty('--pct', `${(input.value / dur) * 100}%`);
+    input.addEventListener('pointerdown', begin);
+    input.addEventListener('keydown', (e) => { if (e.key.startsWith('Arrow')) begin(); e.stopPropagation(); });
+    input.addEventListener('input', () => {
+      let v = Number(input.value);
+      const [s, e] = effectRange(fx.params, dur);
+      if (isEnd) {
+        v = Math.max(s + 0.01, v);
+        fx.params.end = v >= dur - dur / 400 ? null : v;
+        out.textContent = fx.params.end == null ? 'End' : fmtT(v);
+      } else {
+        v = Math.min(e - 0.01, v);
+        fx.params.start = Math.max(0, v);
+        out.textContent = fmtT(fx.params.start);
+      }
+      input.value = v;
+      paint();
+      emitFx(t, fx, false);
+    });
+    input.addEventListener('change', done);
+    input.addEventListener('dblclick', () => {
+      begin();
+      if (isEnd) fx.params.end = null; else fx.params.start = 0;
+      input.value = isEnd ? dur : 0;
+      out.textContent = isEnd ? 'End' : fmtT(0);
+      paint();
+      emitFx(t, fx, false);
+      done();
+    });
+    paint();
+    return h('div.param', { title: `Double-click: ${isEnd ? 'end' : 'start'} of track` }, h('div.param-top', {}, h('label', {}, label), out), input);
+  };
+  return h('div.range-controls', {}, mk('Start time', s0, false), mk('End time', e0, true));
+}
 
 function paramControl(t, fx, p) {
   let gesture = false;
@@ -195,6 +242,11 @@ const fmt = (p, v) => (p.format ? p.format(v) : String(v));
 // ---- Effect browser ---------------------------------------------------------------------------
 
 function browser(anchor) {
+  effectPicker(anchor, { onPick: (type) => addEffect(type), presets: true });
+}
+
+/** Searchable effect list. `onPick(type)` is called with the chosen effect. */
+export function effectPicker(anchor, { onPick, title = null, presets: withPresets = false }) {
   const search = h('input.search', { placeholder: 'Search effects…', spellcheck: false });
   const grid = h('div.fx-browser-grid');
   const draw = () => {
@@ -206,14 +258,14 @@ function browser(anchor) {
       if (!items.length) continue;
       grid.append(h('div.fxb-cat', {}, cat));
       for (const [type, d] of items) {
-        const b = h('button.fxb-item', { onclick: () => { closeMenu(); addEffect(type); } },
+        const b = h('button.fxb-item', { onclick: () => { closeMenu(); onPick(type); } },
           h('span.fx-icon', {}, iconEl(d.icon)),
           h('span.fxb-text', {}, h('strong', {}, d.name), h('small', {}, d.description)));
         first ??= b;
         grid.append(b);
       }
     }
-    const presets = prefs.showPresets ? PRESETS.filter((p) => !q || p.name.toLowerCase().includes(q)) : [];
+    const presets = withPresets && prefs.showPresets ? PRESETS.filter((p) => !q || p.name.toLowerCase().includes(q)) : [];
     if (presets.length) {
       grid.append(h('div.fxb-cat', {}, 'Presets'));
       for (const p of presets) {
@@ -234,6 +286,53 @@ function browser(anchor) {
     if (e.key === 'Escape') closeMenu();
   });
   draw();
-  popover(anchor, h('div.fx-browser', {}, search, grid), { className: 'wide' });
+  popover(anchor, h('div.fx-browser', {}, title ? h('div.fxb-title', {}, title) : null, search, grid), { className: 'wide' });
   search.focus();
+}
+
+// ---- Floating effect editor (opened from an effect bar on the timeline) ------------------------
+
+export function openFxEditor(anchorEl, t, fx) {
+  const def = EFFECTS[fx.type];
+  const sw = h('button.switch', {
+    class: fx.enabled ? 'on' : '', title: 'Enable / bypass',
+    onclick: () => {
+      checkpoint(`${fx.enabled ? 'Disable' : 'Enable'} ${def.name}`);
+      fx.enabled = !fx.enabled;
+      sw.classList.toggle('on', fx.enabled);
+      emitFx(t, fx, true);
+      render();
+    },
+  }, h('span'));
+  const body = h('div.fxe-body', {}, rangeControls(t, fx), h('div.fxe-sep'));
+  for (const p of def.params) body.append(paramControl(t, fx, p));
+  if (!def.params.length) body.append(h('p.fx-note', {}, def.description));
+  const panel = h('div.fx-editor', {},
+    h('div.fxe-head', {},
+      h('span.fx-icon', {}, iconEl(def.icon)),
+      h('strong', {}, def.name),
+      h('button.icon-btn.ghost.sm.danger', {
+        title: 'Remove effect',
+        onclick: () => {
+          closeMenu();
+          checkpoint(`Remove ${def.name}`);
+          t.effects = t.effects.filter((e) => e !== fx);
+          emitFx(t, fx, true);
+          render();
+        },
+      }, iconEl('trash')),
+      h('button.icon-btn.ghost.sm.apply-btn', { title: 'Apply — bake this effect into the audio', onclick: () => { closeMenu(); applyEffect(t, fx.id); } }, iconEl('check')),
+      h('span.fxe-spacer'),
+      sw),
+    body);
+  const r = anchorEl.getBoundingClientRect();
+  const el = popover({ x: r.right + 10, y: r.top - 6 }, panel, { className: 'fx-editor-pop' });
+  if (el) {
+    // Place it beside the bar rather than below the point.
+    const pr = el.getBoundingClientRect();
+    let x = r.right + 10;
+    if (x + pr.width > innerWidth - 8) x = Math.max(8, r.left - pr.width - 10);
+    el.style.left = `${x}px`;
+    el.style.top = `${Math.max(8, Math.min(innerHeight - pr.height - 8, r.top))}px`;
+  }
 }
